@@ -20,10 +20,13 @@ export function App() {
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [tab, setTab] = useState<'trace' | 'audit'>('trace');
+  const [recs, setRecs] = useState<any[]>([]);
+  const [truth, setTruth] = useState<any[]>([]);
 
   useEffect(() => {
     api<Scenario[]>('GET', '/api/scenarios').then(setScenarios);
     api<Control[]>('GET', '/api/controls').then(setControls);
+    api<any[]>('GET', '/api/recordings').then(setRecs);
     const onRestart = () => setNotice('The demo server restarted, so your previous session and its data are gone (state lives only for one run). A fresh session was started.');
     window.addEventListener('decide:run-restarted', onRestart);
     return () => window.removeEventListener('decide:run-restarted', onRestart);
@@ -34,6 +37,7 @@ export function App() {
     setV(view);
     setWwc(view.status === 'OPEN' && view.decision?.outcome !== 'EXECUTE' ? await api('GET', `/api/proposals/${id}/what-would-change`) : null);
     setAudit(await api('GET', '/api/audit'));
+    setTruth(await api('GET', '/api/ground-truth'));
   }, []);
 
   const run = useCallback(async (fn: () => Promise<View | void>) => {
@@ -69,11 +73,14 @@ export function App() {
           <div><h1>DECIDE</h1><p>The action boundary — should this exact action happen now?</p></div>
         </div>
         <nav className="scenarios" aria-label="Scenarios">
-          {scenarios.map((s) => (
-            <button key={s.id} className={`chip ${s.id === active ? 'on' : ''}`} onClick={() => load(s.id)} disabled={busy}>
-              <span className="chip-domain">{DOMAIN_LABEL[s.domain] ?? s.domain}</span>{s.title.split(' — ')[0]}
-            </button>
-          ))}
+          {Object.keys(DOMAIN_LABEL).map((dom) => (
+            <div className="chip-group" key={dom}>
+              <span className="chip-domain">{DOMAIN_LABEL[dom]}</span>
+              {scenarios.filter((x) => x.domain === dom).map((x) => (
+                <button key={x.id} title={x.title} className={`chip ${x.id === active ? 'on' : ''} ${x.id === 'both-monitors-blind' ? 'known-failure' : ''}`} onClick={() => load(x.id)} disabled={busy}>
+                  {x.title.split(' — ')[0]}
+                </button>))}
+            </div>))}
         </nav>
       </header>
       {notice && <div className="banner" role="status">{notice} <button onClick={() => setNotice(null)}>Dismiss</button></div>}
@@ -100,12 +107,16 @@ export function App() {
               {v.status !== 'CLOSED_EXECUTED' && d.obligations.length > 0 && (
                 <ul className="why">{d.obligations.map((g) => <li key={g.gateId}><span className="actor">{actorOf(g)}</span><span>{sentence(g, v)}{g.deadlineAt ? <em className="deadline"> Waits until {new Date(g.deadlineAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, then escalates to an operator.</em> : null}</span></li>)}</ul>
               )}
+              <Invalidated d={d} />
               {d.later.length > 0 && v.status === 'OPEN' && (
                 <p className="later"><strong>Later, once those clear:</strong> {laterSummary(d.later)}</p>
               )}
               <NextStep v={v} busy={busy} onExecute={() => run(() => api('POST', `/api/proposals/${v.proposalId}/revisions/${v.revision}/execute`).then(() => undefined))} />
               {v.receipt && <Receipt r={v.receipt} />}
+              {truth.length > 0 && <GroundTruth truth={truth} executed={v.status === 'CLOSED_EXECUTED'} />}
             </article>
+
+            <GenuineAI v={v} recs={recs} scenario={active} />
 
             {wwc && (wwc.single?.length > 0) && (
               <article className="card wwc">
@@ -184,6 +195,48 @@ function Provenance({ v }: { v: View }) {
   return <span className="prov man">scripted scenario</span>;
 }
 
+const ADJ_HINT: Record<string, string> = {
+  'D-TEL-CONFLICT': 'Choose which existing reading to trust, or reject. You cannot invent a healthy reading.',
+  'P-REMIT-CONFLICT': 'You decide which record is authoritative. You cannot redirect the payment: the payee is fixed in the action. To pay a different account, fix the vendor master and re-propose.',
+  'S-FRAUD': 'Clearing applies only to this exact flag version and this request. A new flag re-opens the review.',
+};
+
+function Invalidated({ d }: { d: NonNullable<View['decision']> }) {
+  const inv = d.obligations.flatMap((g) => (g.observed?.invalid ?? []) as { approvalId: string; reason: string }[]);
+  if (!inv.length) return null;
+  return <p className="invalidated">{inv.map((x) => <span key={x.approvalId}>Approval <code>{short(x.approvalId)}</code> no longer counts: {x.reason}.</span>)}</p>;
+}
+
+function GroundTruth({ truth, executed }: { truth: any[]; executed: boolean }) {
+  return (
+    <div className="ground-truth">
+      <div className="eyebrow">Ground truth — invisible to every monitor and to the engine <span className="sim">known failure</span></div>
+      <p>Real users are seeing <strong>{truth[0].realUserErrorRatePct}% errors</strong>. Both monitors report healthy, agree with each other and are fresh. {executed ? 'DECIDE executed anyway: ' : 'DECIDE will allow this once approved: '}
+        its evidence was fresh, attributable and consistent — and false. A decision layer is only as good as what it can observe.</p>
+    </div>
+  );
+}
+
+function GenuineAI({ v, recs, scenario }: { v: View; recs: any[]; scenario: string }) {
+  const rec = v.proposer.kind === 'RECORDED_LLM' ? recs.find((r) => r.recordingId === v.proposer.recordingId) : recs.find((r) => r.scenarioId === scenario);
+  if (!rec) return null;
+  const sorted = (o: Record<string, unknown>) => JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
+  const same = sorted(rec.parsed.params) === sorted(v.action.params);
+  return (
+    <article className="card genuine">
+      <h3>The AI proposer <span className="prov rec">genuine · {rec.model} · recorded {rec.recordedAt.slice(0, 10)}</span></h3>
+      {v.proposer.kind === 'RECORDED_LLM'
+        ? <p className="hint">This proposal is the model's own recorded output, schema-validated. Its confidence ({Math.round(rec.parsed.agentConfidence * 100)}%) is shown, never used.</p>
+        : <p className="hint">The proposal above comes from a scripted, overconfident agent ({Math.round((v.proposer.agentConfidence ?? 0) * 100)}%). Here is what a real model said for the same request: {Math.round(rec.parsed.agentConfidence * 100)}% confident{same ? ', with the identical typed action' : ''}. {same ? 'Same action, so the same decision — confidence is not an input.' : ''}</p>}
+      <details><summary>Request and raw model output</summary>
+        <div className="eyebrow">Request</div><p className="mono-block">{rec.request}</p>
+        <div className="eyebrow">Raw output</div><pre className="mono-block">{rec.rawOutput}</pre>
+        <small>{rec.via}</small>
+      </details>
+    </article>
+  );
+}
+
 function Badge({ o }: { o: string }) { return <span className={`badge o-${o}`}>{o}</span>; }
 
 function Signal({ label, value, note }: { label: string; value: string; note?: string }) {
@@ -221,8 +274,11 @@ function ReviewSeat({ v, g, busy, run }: { v: View; g: Gate; busy: boolean; run:
           <button className="danger" disabled={busy} onClick={() => run(() => api('POST', `${base}/review`, { approverId: who, verdict: 'REJECT' }))}>Reject</button></div>
       </>)}
       {g.purpose === 'ADJUDICATE' && (<>
-        <p className="hint">Choose which existing reading to trust, or reject the proposal. You cannot invent a healthy reading.</p>
-        <div className="controls">{(g.observed?.candidates ?? []).map((c: any) => <button key={c.observationId} disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'SELECT_OBSERVATION', selection: c.observationId }))}>Trust {c.source}: {c.errorRatePct}% errors, p95 {c.p95Ms} ms</button>)}
+        <p className="hint">{ADJ_HINT[g.gateId] ?? 'Decide, or reject the proposal.'}</p>
+        <div className="controls">
+          {g.gateId === 'D-TEL-CONFLICT' && (g.observed?.candidates ?? []).map((c: any) => <button key={c.observationId} disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'SELECT_OBSERVATION', selection: c.observationId }))}>Trust {c.source}: {c.errorRatePct}% errors, p95 {c.p95Ms} ms</button>)}
+          {g.gateId === 'P-REMIT-CONFLICT' && <button disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'PAY_BOUND_TARGET' }))}>Keep the vendor-master account as payee — it still needs a callback</button>}
+          {g.gateId === 'S-FRAUD' && <button disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'CLEAR_FOR_REVISION' }))}>Clear this flag for this request only</button>}
           <button className="danger" disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'REJECT' }))}>Reject the proposal</button></div>
       </>)}
       {g.purpose === 'TIMEOUT' && (<>

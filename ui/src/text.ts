@@ -31,13 +31,17 @@ const kindOf = (g: Gate) => (g.gateId.startsWith('AVAIL(') ? g.gateId.slice(6, -
 export function actorOf(g: Gate): string {
   if (g.purpose === 'TIMEOUT') return 'Operator';
   if (g.resolver === 'AUTHORITY') return roleLabel(g.role ?? (typeof g.required === 'string' ? g.required : ''));
-  if (g.resolver === 'REQUESTER') return kindOf(g) === 'identity_verification' ? 'Customer' : 'Requester (the agent)';
+  if (g.resolver === 'REQUESTER') return kindOf(g) === 'identity_verification' ? 'The customer' : 'Requester (the agent)';
   if (g.resolver === 'NONE') return 'Nobody';
   const k = kindOf(g);
   if (k) return SOURCE_OF[k] ?? 'External system';
   if (g.gateId.includes('TEL')) return 'Monitoring';
   if (g.gateId.includes('CI') || g.gateId.includes('DRILL')) return 'CI';
   if (g.gateId.includes('LOCK')) return 'Deployer';
+  if (g.gateId.includes('CALLBACK')) return 'Treasury';
+  if (g.gateId.includes('COOLOFF') || g.gateId.includes('COOLDOWN')) return 'The clock';
+  if (g.gateId.includes('3WAY')) return 'ERP';
+  if (g.gateId.includes('IDV')) return 'Identity verification';
   return 'External system';
 }
 
@@ -66,6 +70,23 @@ export function sentence(g: Gate, v?: View): string {
     case 'UNSUPPORTED_TARGET': return 'Unknown service, environment or traffic value.';
     case 'UNSUPPORTED_ACTION': return 'This action type is not covered by any policy.';
     case 'ADJUDICATION_REJECTED': return 'The adjudicator rejected this revision.';
+    case 'FROM_ARTIFACT_MISMATCH': return `The agent claims it is replacing ${g.observed}, but ${String(g.required).replace(/^the artifact actually deployed: /, '')} is what is actually deployed. Recovery proof must cover the real starting point.`;
+    case 'CURRENCY_UNSUPPORTED': return `Currency mismatch or unsupported (proposal ${g.observed?.proposal}, invoice ${g.observed?.invoice}). Only USD-to-USD is supported.`;
+    case 'UNSUPPORTED_RAIL': return `Unknown payment rail ${g.observed}.`;
+    case 'INVALID_AMOUNT': return 'The amount is not a positive whole number of cents.';
+    case 'DUPLICATE_PAYMENT': return 'This invoice is already settled. Paying it again would be a duplicate payment.';
+    case 'OVER_OPEN_BALANCE': return `The amount exceeds what is still owed on the invoice (${g.required}).`;
+    case 'THREE_WAY_MISMATCH': return 'Purchase order, goods receipt and invoice do not match.';
+    case 'THREE_WAY_PENDING': return 'The goods receipt is not posted yet, so the invoice cannot be matched.';
+    case 'REMIT_TO_MISMATCH': return 'The invoice asks for payment to one account; the vendor master now holds a different one. An AP manager must decide which is authoritative. The payee cannot be changed by that decision.';
+    case 'CALLBACK_PENDING': return 'Treasury is calling the vendor on the number on file to confirm the bank change.';
+    case 'CALLBACK_DENIED': return 'On the callback, the vendor said they never changed their bank details. This is business-email-compromise fraud; no one can approve paying it.';
+    case 'BANK_DETAILS_COOLOFF': return `The bank details changed less than 48 hours ago (via ${g.observed?.channel}). Waiting is a separate requirement from verification; it never replaces it.`;
+    case 'EMAIL_OWNED_BY_ANOTHER_ACCOUNT': return 'That email address already belongs to a different account.';
+    case 'IDENTITY_VERIFICATION_PENDING': return 'The customer has started identity verification but it has not finished.';
+    case 'IDENTITY_VERIFICATION_FAILED': return 'Identity verification failed. Changing the login email now would hand the account to whoever asked.';
+    case 'RECENT_CREDENTIAL_CHANGE': return 'The password or MFA changed in the last 24 hours, a classic account-takeover pattern. Waiting out the cool-down.';
+    case 'SECURITY_REVIEW_FLAG': return 'The risk engine flagged this account. A security lead must clear this exact flag or reject the request.';
     case 'CANCELLED_BY_OPERATOR': return 'An operator cancelled this revision after its deadline.';
     default: return `${g.gateId}: ${g.reasonCode ?? 'blocked'}`;
   }

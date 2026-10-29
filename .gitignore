@@ -5,3 +5,5 @@ data/
 *.db-shm
 .env
 public/
+test-results/
+playwright-report/

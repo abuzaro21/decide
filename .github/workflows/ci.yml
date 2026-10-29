@@ -31,3 +31,16 @@ jobs:
       - name: Record exact SHA
         shell: bash
         run: echo "verified ${GITHUB_SHA} on ${{ matrix.os }} with $(node --version)"
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Browser tests (real server, real SQLite)
+        run: npm run test:e2e
