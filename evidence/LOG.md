@@ -53,3 +53,9 @@ Carried forward to G2/G3 (non-blocking):
 - terminal cancellation;
 - OPEN/current revision checks;
 - rejection of preview persistence.
+
+## 2026-10-30 — Container cold start and run reset (local Docker, nothing deployed)
+
+- `docker build -t decide:local .`: 337 MB image (node:24.13.0-slim). Runs as the unprivileged `node` user.
+- Cold start to a healthy `/api/health` response: **1667 ms**. A Render free instance adds its own wake-up of about 1 minute.
+- `docker restart` gives a new `runId`. The old session cookie then gets `410 "this demo run was restarted…"`, so nothing implies persistence across restarts.
