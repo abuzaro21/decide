@@ -32,7 +32,7 @@ async function harness() {
   };
   const execute = (pid: string, rev: number) => call('POST', `/api/proposals/${pid}/revisions/${rev}/execute`);
   const events = async () => (await call('GET', '/api/audit')).body;
-  return { call, scenario, world, view, reviewAs, adjudicate, episodeOf, execute, events, tick: (ms: number) => { now += ms; },
+  return { app, call, scenario, world, view, reviewAs, adjudicate, episodeOf, execute, events, tick: (ms: number) => { now += ms; },
     stop: () => new Promise<void>((r) => app.server.close(() => { app.close(); rmSync(dir, { recursive: true, force: true }); r(); })) };
 }
 
@@ -250,20 +250,32 @@ test('G3-02 replaying an adjudication command after the flag changed is refused 
   } finally { await h.stop(); }
 });
 
-test('G4-02 exposure is a rolling 30-day window: a settlement 31 days old no longer counts', async () => {
+test('G4-02 exposure is a rolling 30-day window: after 31 days a new $200 invoice executes at MEDIUM', async () => {
   const h = await harness();
   try {
     const pid = await h.scenario('vendor-clean');
     assert.equal((await h.execute(pid, 1)).body.status, 'SUCCEEDED'); // $800 settled at t0
     h.tick(31 * 24 * 3600_000);
-    // a new $200 invoice for the same vendor (simulated ERP publishes it)
-    const r = await h.call('POST', '/api/proposals', { actionType: 'pay_vendor_invoice', params: { vendorId: 'northwind', invoiceId: 'INV-10422', amountCents: 20000, currency: 'USD', rail: 'ACH' } });
+    const { publish } = await import('../src/world.ts');
+    const { tx } = await import('../src/db.ts');
+    const sess = (await h.call('GET', '/api/session')).body;
+    const now = sess.now;
+    tx(h.app.db, () => { // the simulated ERP issues a NEW invoice for the same vendor
+      const S = { sessionId: sess.sessionId, runId: sess.runId };
+      publish(h.app.db, S, { kind: 'invoice_state', sourceId: 'erp', sourceClass: 'ADAPTER', subject: { invoiceId: 'INV-10777' }, value: { version: 1, status: 'OPEN', openBalanceCents: 20_000, currency: 'USD' } }, now);
+      publish(h.app.db, S, { kind: 'three_way_match', sourceId: 'erp', sourceClass: 'ADAPTER', subject: { invoiceId: 'INV-10777', invoiceVersion: 1 }, value: { status: 'MATCHED' } }, now);
+      publish(h.app.db, S, { kind: 'remit_to', sourceId: 'erp', sourceClass: 'ADAPTER', subject: { invoiceId: 'INV-10777', invoiceVersion: 1 }, value: { accountDigest: 'acct:7c1-northwind-original' } }, now);
+      publish(h.app.db, S, { kind: 'callback_verification', sourceId: 'treasury', sourceClass: 'ADAPTER', subject: { vendorId: 'northwind', bankDetailsVersion: 3, accountDigest: 'acct:7c1-northwind-original' }, value: { status: 'PASS' } }, now);
+    });
+    const r = await h.call('POST', '/api/proposals', { actionType: 'pay_vendor_invoice', params: { vendorId: 'northwind', invoiceId: 'INV-10777', amountCents: 20000, currency: 'USD', rail: 'ACH' } });
     const d = (await h.view(r.body.proposalId)).decision;
-    assert.equal(d.risk.I, 1, 'only the $200 counts after 31 days');
+    assert.equal(d.risk.I, 1, 'the $800 from 31 days ago is outside the window');
+    assert.equal(d.outcome, 'EXECUTE');
+    assert.equal((await h.execute(r.body.proposalId, 1)).body.status, 'SUCCEEDED');
   } finally { await h.stop(); }
 });
 
-test('G4-03 changing an email to its current address keeps ownership', async () => {
+test('G4-03 changing an email to its current address keeps ownership in the index', async () => {
   const h = await harness();
   try {
     const pid = await h.scenario('support-injection');
@@ -271,12 +283,11 @@ test('G4-03 changing an email to its current address keeps ownership', async () 
     await h.execute(pid, 1);
     const p2 = await h.call('POST', '/api/proposals', { actionType: 'change_account_email', params: { accountId: 'acct-55120', ticketId: 'T-58213', newEmail: 'new@example.com' } });
     await h.world(p2.body.proposalId, 'idv-pass');
-    const ex = await h.execute(p2.body.proposalId, 1);
-    assert.equal(ex.body.status, 'SUCCEEDED');
-    const p3 = await h.call('POST', '/api/proposals', { actionType: 'change_account_email', params: { accountId: 'acct-999', ticketId: 'T-1', newEmail: 'new@example.com' } });
-    assert.equal(p3.status, 409, 'acct-999 does not exist');
-    const v = await h.view(p2.body.proposalId);
-    assert.equal(v.status, 'CLOSED_EXECUTED');
+    assert.equal((await h.execute(p2.body.proposalId, 1)).body.status, 'SUCCEEDED');
+    const sess = (await h.call('GET', '/api/session')).body;
+    const { readObs } = await import('../src/world.ts');
+    const idx = readObs(h.app.db, { sessionId: sess.sessionId, runId: sess.runId }, 'email_index', 'crm', { email: 'new@example.com' });
+    assert.equal(idx!.value.ownerAccountId, 'acct-55120');
   } finally { await h.stop(); }
 });
 

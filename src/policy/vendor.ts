@@ -12,17 +12,25 @@ export const payoutTarget = (a: Action) => ({ bankDetailsVersion: a.expectedTarg
 export const remitConflictDigest = (remitTo: string, a: Action) => digest({ remitTo, target: payoutTarget(a) });
 
 /** exposure = Σ settled payouts in (now − 30 d, now] + this amount (06 §5). The ledger reports timestamped settlements (G4-02). */
-export function exposureCents(c: Ctx): number {
-  const settlements = c.admitted.vendor_exposure[0]?.value.settlements as { at: number; cents: number }[] | undefined;
-  const amount = c.params.amountCents;
-  if (!Array.isArray(settlements) || !Number.isSafeInteger(amount)) return Number.NaN;
-  const now = c.snapshot.now;
-  let total = amount;
+/** Σ settled cents in (now − 30 d, now]; NaN on malformed ledger data. One function for risk AND approval binding (R-01). */
+export function inWindowCents(value: Record<string, unknown> | undefined, now: number): number {
+  const settlements = value?.settlements as { at: number; cents: number }[] | undefined;
+  if (!Array.isArray(settlements)) return Number.NaN;
+  let total = 0;
   for (const x of settlements) {
-    if (!Number.isSafeInteger(x.cents) || x.cents <= 0) return Number.NaN;
+    if (!Number.isSafeInteger(x.cents) || x.cents <= 0 || !Number.isSafeInteger(x.at)) return Number.NaN;
     if (x.at > now - 30 * DAY && x.at <= now) total += x.cents;
   }
   if (!Number.isSafeInteger(total)) throw new Error('exposure overflow'); // checked arithmetic (06 §5)
+  return total;
+}
+
+export function exposureCents(c: Ctx): number {
+  const settled = inWindowCents(c.admitted.vendor_exposure[0]?.value, c.snapshot.now);
+  const amount = c.params.amountCents;
+  if (Number.isNaN(settled) || !Number.isSafeInteger(amount)) return Number.NaN;
+  const total = settled + amount;
+  if (!Number.isSafeInteger(total)) throw new Error('exposure overflow');
   return total;
 }
 
@@ -46,7 +54,9 @@ export const vendorPolicy: Policy = {
       // Bound to the exact payout target by subject, AND capped at 90 days (06 §6, G4-01).
       freshness: { type: 'MAX_AGE', ms: 90 * DAY }, binding: 'SNAPSHOT', timeoutMs: 72 * HOUR, hypothetical: () => ({ status: 'PASS' }) },
     { kind: 'vendor_exposure', sources: { ledger: 'ADAPTER' }, fields: ['vendorId'],
-      subject: (a) => ({ vendorId: String(p(a).vendorId), windowDays: 30 }), freshness: { type: 'READ_CURRENT_STATE' }, binding: 'PRECONDITION', timeoutMs: 10 * MIN },
+      subject: (a) => ({ vendorId: String(p(a).vendorId), windowDays: 30 }), freshness: { type: 'READ_CURRENT_STATE' }, binding: 'PRECONDITION', timeoutMs: 10 * MIN,
+      // The approval binds the exact in-window exposure, not the raw ledger history (R-01).
+      bindValue: (v, now) => ({ inWindowCents: inWindowCents(v, now) }) },
   ],
   currentState: [
     { kind: 'invoice_state', compare: (a, v) => (v.version === a.expectedTargetVersions.invoiceVersion ? [] : [`invoiceVersion: expected ${a.expectedTargetVersions.invoiceVersion}, current ${v.version}`]) },

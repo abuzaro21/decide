@@ -92,6 +92,8 @@ export interface EvidenceKind {
   timeoutMs: number; // OW deadline for AVAIL(kind)
   fields: string[]; // params the subject reads
   hypothetical?: (a: Action) => Record<string, unknown>; // value used by "what would change"
+  /** PRECONDITION kinds: the exact fact an approval binds, projected from the raw value at evaluation time (R-01). Default: the raw value. */
+  bindValue?: (value: Record<string, unknown>, now: number) => unknown;
 }
 
 export type Timeout = { type: 'OW' | 'RW'; ms: number } | { type: 'KR'; releaseAt: (c: Ctx) => number };
@@ -498,7 +500,10 @@ function binding(policy: Policy, admitted: Record<string, Observation[]>, snap: 
   const obs = Object.values(admitted).flat().filter((o) => kinds.has(o.kind)).map(observationId);
   const adj = validAdjudications(snap, policy).map((x) => `adj:${digest(x)}`);
   const preconditions: Record<string, string> = {};
-  for (const e of policy.evidence) if (e.binding === 'PRECONDITION' && admitted[e.kind]?.length) preconditions[e.kind] = digest(admitted[e.kind][0].value);
+  for (const e of policy.evidence) if (e.binding === 'PRECONDITION' && admitted[e.kind]?.length) {
+    const v = admitted[e.kind][0].value;
+    preconditions[e.kind] = digest(e.bindValue ? e.bindValue(v, snap.now) : v);
+  }
   return { snapshotRoot: digest([...obs, ...adj].sort()), preconditions };
 }
 

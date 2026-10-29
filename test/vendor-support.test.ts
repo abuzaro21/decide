@@ -197,3 +197,21 @@ test('G4-02 exposure counts settlements in (now − 30 d, now] only', () => {
   assert.equal(run(vendorPolicy, at(29)).risk!.I, 2); // 80,000 + 20,000 = 100,000 ⇒ HIGH band
   assert.equal(run(vendorPolicy, at(31)).risk!.I, 1); // old settlement outside the window
 });
+
+test('R-01 approval binds the exact in-window exposure: a settlement ageing out invalidates; an irrelevant old backfill does not', () => {
+  const base = swap(payBase({ amountCents: 800_000 }), 'invoice_state', { openBalanceCents: 800_000 });
+  const withLedger = (s: Snapshot, settlements: { at: number; cents: number }[]) => swap(s, 'vendor_exposure', { settlements });
+  // 1) $12,000 settled just inside the window; approve the $20,000 exposure (HIGH)
+  const s1 = withLedger(base, [{ at: T0 - 30 * 24 * HOUR + MIN, cents: 1_200_000 }]);
+  const approved = approve(vendorPolicy, s1, 'human:ana');
+  assert.equal(run(vendorPolicy, approved).outcome, 'EXECUTE');
+  const later = { ...approved, now: T0 + 2 * MIN };
+  const d1 = run(vendorPolicy, later);
+  assert.equal(d1.risk!.tier, 'HIGH');
+  assert.equal(d1.outcome, 'ESCALATE', 'exposure dropped from $20,000 to $8,000: same tier, but not what was approved');
+  // 2) approve with nothing in window, then backfill a settlement that is already outside the window
+  const s2 = withLedger(base, []);
+  const ok = approve(vendorPolicy, s2, 'human:ana');
+  const backfilled = withLedger(ok, [{ at: T0 - 31 * 24 * HOUR, cents: 500_000 }]);
+  assert.equal(run(vendorPolicy, backfilled).outcome, 'EXECUTE', 'in-window exposure unchanged, approval still valid');
+});
