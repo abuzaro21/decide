@@ -168,7 +168,7 @@ test('DEP-17 lock held → DEFER; DEP-18 generation changed → REFUSE STALE_PRO
 
 test('admission: requester-claimed apm source, future-dated and boundary-expired telemetry are rejected (T-02, T-03)', () => {
   const s = without(deployBase(), 'telemetry');
-  const tel = { service: 'checkout-api', env: 'prod' };
+  const tel = { service: 'checkout-api', env: 'prod', windowSec: 300 };
   const mk = (o: object) => ({ kind: 'telemetry', sourceId: 'apm', sourceClass: 'ADAPTER' as const, sourceRevision: 1, subject: tel, value: { errorRatePct: 0.1, p95Ms: 100 }, observedAt: T0, ...o });
   const cases: [object, string | null][] = [
     [{ sourceClass: 'REQUESTER' }, 'SOURCE_NOT_ACCEPTED'],
@@ -176,7 +176,9 @@ test('admission: requester-claimed apm source, future-dated and boundary-expired
     [{ observedAt: T0 + 5000 }, null],
     [{ observedAt: T0 - 5 * MIN }, 'EXPIRED'],
     [{ observedAt: T0 - 5 * MIN + 1 }, null],
-    [{ subject: { service: 'checkout-api', env: 'staging' } }, 'SUBJECT_MISMATCH'],
+    [{ subject: { service: 'checkout-api', env: 'staging', windowSec: 300 } }, 'SUBJECT_MISMATCH'],
+    [{ subject: { service: 'checkout-api', env: 'prod' } }, 'SUBJECT_MISMATCH'], // G1-05: window is part of the tuple
+    [{ subject: { service: 'checkout-api', env: 'prod', windowSec: 60 } }, 'SUBJECT_MISMATCH'],
   ];
   for (const [patch, reason] of cases) {
     const d = decide({ ...s, candidates: [...s.candidates, mk(patch)] });
@@ -200,4 +202,67 @@ test('what-would-change: bounded previews, never executable, combined only with 
   const all = explainRepairs(deployPolicy, approve(deployBase(), 'human:rhea'), META, decide(approve(deployBase(), 'human:rhea')));
   assert.equal(all.single.length, 0);
   assert.equal(all.combined, null);
+});
+
+// ---- Codex G1 regressions (codex-sessions/phase0/codex-recheck-g1-final.md) ----
+const conflictAdj = (s: ReturnType<typeof deployBase>, select: string, extra: object = {}) => {
+  const fresh = s.candidates.filter((o) => o.kind === 'telemetry' && o.observedAt === s.now);
+  return { revision: 1, gateId: 'D-TEL-CONFLICT', conflictDigest: conflictDigest(fresh), decision: 'SELECT_OBSERVATION', selection: select, role: 'sre-oncall', actor: 'human:sam', ...extra };
+};
+const twoTel = (s: ReturnType<typeof deployBase>, apm: number, syn: number) =>
+  withObs(withObs(s, 'telemetry', 'apm', { errorRatePct: apm, p95Ms: 310 }), 'telemetry', 'synthetic', { errorRatePct: syn, p95Ms: 330 });
+
+test('G1-01 CI pending does not mask a verified failed drill → REFUSE', () => {
+  const d = decide(withObs(withObs(deployBase(), 'ci_result', 'ci', { status: 'PENDING' }), 'rollback_drill', 'ci', { status: 'FAIL' }));
+  assert.equal(d.outcome, 'REFUSE');
+  assert.deepEqual(failIds(d), ['D-CI-PENDING', 'D-DRILL-BAD']);
+});
+
+test('G1-02 missing deploy state does not mask an independent prohibition → REFUSE', () => {
+  const d = decide(without(deployBase({ intent: 'INCIDENT_REMEDIATION' }), 'deploy_state'));
+  assert.equal(d.outcome, 'REFUSE');
+  assert.deepEqual(failIds(d), ['AVAIL(deploy_state)', 'D-INTENT']);
+});
+
+test('G1-03 invalid or unauthorized adjudication never resolves a conflict', () => {
+  const s = twoTel(deployBase({ service: 'search-api', trafficPercent: 1 }), 0.3, 4.1);
+  const apmId = observationId(s.candidates.filter((o) => o.kind === 'telemetry' && o.observedAt === s.now).find((o) => o.sourceId === 'apm')!);
+  for (const adj of [
+    conflictAdj(s, 'not-an-existing-observation'),
+    conflictAdj(s, apmId, { role: 'release-owner', actor: 'human:rhea' }), // wrong role for this gate
+    conflictAdj(s, apmId, { actor: 'human:nobody' }), // actor does not hold sre-oncall
+    conflictAdj(s, apmId, { actor: 'agent:deploy-bot' }), // requester cannot adjudicate its own proposal
+  ]) {
+    const d = decide({ ...s, roles: { ...s.roles, 'agent:deploy-bot': ['sre-oncall'] }, adjudications: [adj] });
+    assert.equal(d.outcome, 'ESCALATE', JSON.stringify(adj));
+    assert.deepEqual(failIds(d), ['D-TEL-CONFLICT']);
+  }
+  assert.equal(decide({ ...s, adjudications: [conflictAdj(s, apmId)] }).outcome, 'EXECUTE'); // valid selection of healthy apm
+});
+
+test('G1-04 changing the adjudication invalidates a strict-snapshot approval', () => {
+  const s = twoTel(deployBase(), 0.2, 1.5); // both healthy, delta > 1pp → conflict
+  const fresh = s.candidates.filter((o) => o.kind === 'telemetry' && o.observedAt === s.now);
+  const [apmId, synId] = ['apm', 'synthetic'].map((src) => observationId(fresh.find((o) => o.sourceId === src)!));
+  const adjudicated = { ...s, adjudications: [conflictAdj(s, apmId)] };
+  const approved = approve(adjudicated, 'human:rhea');
+  assert.equal(decide(approved).outcome, 'EXECUTE');
+  const changed = { ...approved, adjudications: [conflictAdj(s, synId)] };
+  const d = decide(changed);
+  assert.equal(d.outcome, 'ESCALATE');
+  assert.match(JSON.stringify(d.obligations[0].observed), /evidence snapshot changed/);
+});
+
+test('G1-05 correctly window-bound, fresh, agreeing telemetry is admitted → canary EXECUTE', () => {
+  const d = decide(deployBase({ service: 'search-api', trafficPercent: 1 }));
+  assert.equal(d.outcome, 'EXECUTE');
+  assert.equal(d.rejected.length, 0);
+});
+
+test('timer CANCEL requires a current operator', () => {
+  const s0 = dep1();
+  const timers = decide(s0).timerUpdates;
+  const cancel = (actor: string) => ({ revision: 1, gateId: 'AVAIL(telemetry)', conflictDigest: '', decision: 'CANCEL', role: 'operator', actor });
+  assert.equal(decide({ ...s0, timers, adjudications: [cancel('human:nobody')] }).outcome, 'DEFER');
+  assert.equal(decide({ ...s0, timers, adjudications: [cancel('human:op')] }).outcome, 'REFUSE');
 });

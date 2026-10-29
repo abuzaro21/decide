@@ -16,19 +16,20 @@ export function deployBase(over: Partial<Record<string, unknown>> = {}): Snapsho
     expectedTargetVersions: { generation: 88, currentArtifact: 'sha256:2134', schemaVersion: 41, configVersion: 7 },
     recoveryScope: { procedureHash: 'proc-h' },
   };
-  const tel = { service: String(params.service), env: String(params.environment) };
+  const tel = { service: String(params.service), env: String(params.environment), windowSec: 300 };
+  const target = { service: String(params.service), env: String(params.environment) };
   const art = { artifact: String(params.toArtifact) };
   const drill = { from: String(params.fromArtifact), to: String(params.toArtifact), env: String(params.environment), schemaVersion: 41, configVersion: 7, procedureHash: 'proc-h' };
   return {
     action, now: T0, approvals: [], adjudications: [], timers: {}, agentConfidence: 0.99,
-    roles: { 'human:rhea': ['release-owner'], 'human:omar': ['eng-director'], 'human:sam': ['sre-oncall'] },
+    roles: { 'human:rhea': ['release-owner'], 'human:omar': ['eng-director'], 'human:sam': ['sre-oncall'], 'human:op': ['operator'] },
     candidates: [
       obs('telemetry', 'apm', tel, { errorRatePct: 0.4, p95Ms: 310 }, 1 * MIN),
       obs('telemetry', 'synthetic', tel, { errorRatePct: 0.5, p95Ms: 330 }, 1 * MIN),
       obs('ci_result', 'ci', art, { status: 'PASS' }, 60 * MIN),
       obs('migration_class', 'ci', art, { class: 'NONE' }, 60 * MIN),
       obs('rollback_drill', 'ci', drill, { status: 'PASS' }, 14 * MIN),
-      obs('deploy_state', 'deployer', tel, { generation: 88, currentArtifact: 'sha256:2134', schemaVersion: 41, configVersion: 7, lockHolder: null }, 0),
+      obs('deploy_state', 'deployer', target, { generation: 88, currentArtifact: 'sha256:2134', schemaVersion: 41, configVersion: 7, lockHolder: null }, 0),
     ],
   };
 }

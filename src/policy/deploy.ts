@@ -4,6 +4,7 @@ import { digest } from '../canonical.ts';
 
 export const SERVICES: Record<string, { tier: 1 | 2 }> = { 'checkout-api': { tier: 1 }, 'search-api': { tier: 2 } };
 const ENVS = ['dev', 'staging', 'prod'];
+export const TELEMETRY_WINDOW_SEC = 300; // 06 §6: telemetry subject includes its 5-minute observation window
 
 // Telemetry safety predicate (06 §6): strict, equality counts as unhealthy.
 export const healthy = (v: Record<string, any>) => v.errorRatePct < 2.0 && v.p95Ms < 800;
@@ -30,7 +31,7 @@ export const deployPolicy: Policy = {
   requiredFields: ['service', 'environment', 'toArtifact', 'fromArtifact', 'trafficPercent', 'intent'],
   evidence: [
     { kind: 'telemetry', sources: { apm: 'ADAPTER', synthetic: 'ADAPTER' }, fields: ['service', 'environment'],
-      subject: (a) => ({ service: String(p(a).service), env: String(p(a).environment) }),
+      subject: (a) => ({ service: String(p(a).service), env: String(p(a).environment), windowSec: TELEMETRY_WINDOW_SEC }),
       freshness: { type: 'MAX_AGE', ms: 5 * MIN }, binding: 'SNAPSHOT', timeoutMs: 15 * MIN,
       hypothetical: () => ({ errorRatePct: 0.4, p95Ms: 310 }) },
     { kind: 'ci_result', sources: { ci: 'ADAPTER' }, fields: ['toArtifact'],
@@ -73,18 +74,19 @@ export const deployPolicy: Policy = {
       if (!conflict) return { status: 'PASS' };
       const adj = c.adjudication('D-TEL-CONFLICT', conflictDigest(conflict));
       if (adj?.decision === 'REJECT') return { status: 'FAIL', resolver: 'NONE', reasonCode: 'ADJUDICATION_REJECTED' };
-      if (adj?.decision === 'SELECT_OBSERVATION') return { status: 'PASS', observed: `selected ${adj.selection}` };
+      if (adj?.decision === 'SELECT_OBSERVATION' && conflict.some((o) => obsId(o) === adj.selection)) return { status: 'PASS', observed: `selected ${adj.selection}` };
       return { status: 'FAIL', reasonCode: 'TELEMETRY_SOURCES_DISAGREE', observed: conflict.map((o) => ({ source: o.sourceId, ...o.value })) };
     } },
     { id: 'D-TEL-HEALTH', resolver: 'EXTERNAL', reads: ['telemetry'], dependsOn: ['D-TEL-CONFLICT'], timeout: { type: 'RW', ms: 15 * MIN },
       repair: { kind: 'telemetry', value: { errorRatePct: 0.4, p95Ms: 310 } }, eval: (c) => {
       const conflict = telemetryConflict(c);
       const sel = conflict ? c.adjudication('D-TEL-CONFLICT', conflictDigest(conflict))?.selection : undefined;
-      const obs = (sel && c.admitted.telemetry.find((o) => obsId(o) === sel)) || c.one('telemetry');
+      const obs = conflict ? conflict.find((o) => obsId(o) === sel) : c.one('telemetry');
+      if (!obs) throw new Error('evaluator bug: health evaluated without a valid conflict selection');
       return healthy(obs.value) ? { status: 'PASS', observed: obs.value }
         : { status: 'FAIL', reasonCode: 'TELEMETRY_UNHEALTHY', observed: obs.value, required: 'error rate < 2.0% and p95 < 800 ms' };
     } },
-    { id: 'D-DRILL-BAD', resolver: 'NONE', reads: ['rollback_drill'], dependsOn: ['D-CI-BAD', 'D-CI-PENDING'], eval: (c) =>
+    { id: 'D-DRILL-BAD', resolver: 'NONE', reads: ['rollback_drill'], eval: (c) =>
       c.val('rollback_drill').status === 'FAIL' ? { status: 'FAIL', reasonCode: 'ROLLBACK_DRILL_FAILED', observed: c.val('rollback_drill') } : { status: 'PASS' } },
     { id: 'D-DRILL-PENDING', resolver: 'EXTERNAL', reads: ['rollback_drill'], dependsOn: ['D-CI-BAD', 'D-CI-PENDING'], timeout: { type: 'OW', ms: 4 * HOUR },
       repair: { kind: 'rollback_drill', value: { status: 'PASS' } }, eval: (c) =>

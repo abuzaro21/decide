@@ -234,7 +234,7 @@ export function expandPolicy(p: Policy): Map<string, GateDef & { deps: string[] 
     if (g.repair && 'kind' in g.repair && g.resolver !== 'EXTERNAL' && g.resolver !== 'REQUESTER') throw new Error(`policy ${p.name}: gate ${g.id} evidence repair on ${g.resolver} resolver`);
     if (g.repair && 'approval' in g.repair && g.purpose !== 'APPROVE') throw new Error(`policy ${p.name}: gate ${g.id} approval repair on non-APPROVE gate`);
     if (g.resolver === 'NONE' && g.repair) throw new Error(`policy ${p.name}: NONE gate ${g.id} has a repair`);
-    const deps = new Set<string>(['FIELDS', 'VERSIONS', ...(g.dependsOn ?? []), ...(g.reads ?? []).map(availId)]);
+    const deps = new Set<string>(['FIELDS', ...(g.dependsOn ?? []), ...(g.reads ?? []).map(availId)]);
     add(g, [...deps]);
   }
   // APPROVE depends on every other non-APPROVE gate (implicit, 06 §3).
@@ -322,8 +322,7 @@ export function evaluateCore(policy: Policy, snap: Snapshot, meta: Meta, mode: M
     action: a, params: a.params as Record<string, any>, admitted, snapshot: snap, policy, mode, meta,
     one: (k) => { const o = admitted[k]?.[0]; if (!o) throw new Error(`evaluator bug: read unavailable evidence ${k}`); return o; },
     val: (k) => ctx.one(k).value as Record<string, any>,
-    adjudication: (gateId, conflictDigest) =>
-      snap.adjudications.find((x) => x.revision === a.revision && x.gateId === gateId && x.conflictDigest === conflictDigest),
+    adjudication: (gateId, conflictDigest) => validAdjudications(snap, policy).find((x) => x.gateId === gateId && x.conflictDigest === conflictDigest),
     risk: () => {
       if (riskMemo) return riskMemo;
       const r = policy.risk(ctx);
@@ -381,21 +380,18 @@ export function evaluateCore(policy: Policy, snap: Snapshot, meta: Meta, mode: M
     const timer = { firstBlockedAt, deadlineAt, extended: prev?.extended ?? false };
     if (!prev || prev.deadlineAt !== deadlineAt) timerUpdates[r.gateId] = timer;
     r.deadlineAt = deadlineAt;
-    const cancel = snap.adjudications.find((x) => x.revision === a.revision && x.gateId === r.gateId && x.decision === 'CANCEL');
+    const cancel = validAdjudications(snap, policy).find((x) => x.gateId === r.gateId && x.decision === 'CANCEL');
     if (cancel) Object.assign(r, { resolver: 'NONE', purpose: undefined, role: undefined, reasonCode: 'CANCELLED_BY_OPERATOR' });
     else if (now >= deadlineAt) Object.assign(r, { resolver: 'AUTHORITY', purpose: 'TIMEOUT', role: 'operator', reasonCode: `TIMEOUT:${r.reasonCode ?? ''}` });
   }
 
   const admittedAll = Object.values(admitted).flat();
-  const snapshotKinds = new Set(policy.evidence.filter((e) => e.binding === 'SNAPSHOT').map((e) => e.kind));
-  const preconditions: Record<string, string> = {};
-  for (const e of policy.evidence) if (e.binding === 'PRECONDITION' && admitted[e.kind]?.length) preconditions[e.kind] = digest(admitted[e.kind][0].value);
+  const { snapshotRoot, preconditions } = binding(policy, admitted, snap);
   const risk = results.get('FIELDS')?.status === 'PASS' ? ctx.risk() : null;
   return finish([...results.values()], {
     ...base, rejected,
     admittedIds: admittedAll.map(observationId).sort(),
-    snapshotRoot: digest(admittedAll.filter((o) => snapshotKinds.has(o.kind)).map(observationId).sort()),
-    preconditions, risk, timerUpdates,
+    snapshotRoot, preconditions, risk, timerUpdates,
   }, snap, policy);
 }
 
@@ -481,12 +477,22 @@ export function approvalExpiry(policy: Policy, snap: Snapshot, d: Decision): num
   return exp;
 }
 
-export function snapshotBinding(c: Ctx) {
-  const snap = new Set(c.policy.evidence.filter((e) => e.binding === 'SNAPSHOT').map((e) => e.kind));
-  const all = Object.values(c.admitted).flat();
+export const snapshotBinding = (c: Ctx) => binding(c.policy, c.admitted, c.snapshot);
+
+/** Strict-snapshot binding (06 §6, §8): SNAPSHOT observations + applicable adjudication records, and exact PRECONDITION values. */
+function binding(policy: Policy, admitted: Record<string, Observation[]>, snap: Snapshot) {
+  const kinds = new Set(policy.evidence.filter((e) => e.binding === 'SNAPSHOT').map((e) => e.kind));
+  const obs = Object.values(admitted).flat().filter((o) => kinds.has(o.kind)).map(observationId);
+  const adj = validAdjudications(snap, policy).map((x) => `adj:${digest(x)}`);
   const preconditions: Record<string, string> = {};
-  for (const e of c.policy.evidence) if (e.binding === 'PRECONDITION' && c.admitted[e.kind]?.length) preconditions[e.kind] = digest(c.admitted[e.kind][0].value);
-  return { snapshotRoot: digest(all.filter((o) => snap.has(o.kind)).map(observationId).sort()), preconditions };
+  for (const e of policy.evidence) if (e.binding === 'PRECONDITION' && admitted[e.kind]?.length) preconditions[e.kind] = digest(admitted[e.kind][0].value);
+  return { snapshotRoot: digest([...obs, ...adj].sort()), preconditions };
+}
+
+/** Adjudications for the current revision whose role is the role the gate requires and whose actor currently holds it. */
+export function validAdjudications(snap: Snapshot, policy: Policy): Adjudication[] {
+  const roleFor = (gateId: string) => (gateId.startsWith('AVAIL(') || policy.gates.find((g) => g.id === gateId)?.timeout ? 'operator' : policy.gates.find((g) => g.id === gateId)?.role);
+  return snap.adjudications.filter((x) => x.revision === snap.action.revision && x.role === roleFor(x.gateId) && (snap.roles[x.actor] ?? []).includes(x.role) && x.actor !== snap.action.initiatingPrincipal);
 }
 
 /** explainRepairs (06 §3): on demand, bounded (≤ #FAIL + 1 core calls), never recursive, never persisted. */

@@ -100,3 +100,9 @@ test('removing all observations of any mandatory slot never yields EXECUTE', () 
     }
   }
 });
+
+test('JCS rejects lone surrogates in strings and keys (RFC 8785 §3.2.2.2)', () => {
+  assert.throws(() => canonicalize({ x: '\ud800' }), /surrogate/);
+  assert.throws(() => canonicalize({ ['\udc00']: 1 }), /surrogate/);
+  assert.equal(canonicalize('😀'), '"😀"');
+});
