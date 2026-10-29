@@ -1,0 +1,13 @@
+{
+ "platform": "linux",
+ "node": "v24.13.0",
+ "sqlite": "node:sqlite",
+ "passed": [
+  "UNIQUE operation id blocks duplicate effect",
+  "rollback undoes effect + audit together",
+  "BEGIN IMMEDIATE serializes a second writer (SQLITE_BUSY)",
+  "triggers make audit append-only",
+  "CHECK rejects HYPOTHETICAL evidence rows",
+  "committed data survives reopen"
+ ]
+}
