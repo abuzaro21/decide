@@ -20,8 +20,10 @@ jobs:
           cache: npm
       - name: Clean install
         run: npm ci
-      - name: Typecheck
+      - name: Typecheck (server, tests, UI)
         run: npm run typecheck
+      - name: Build UI
+        run: npm run build
       - name: SQLite integration spike
         run: npm run spike:sqlite
       - name: Tests

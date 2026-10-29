@@ -9,7 +9,8 @@ import { Worker } from 'node:worker_threads';
 import { openDb, verifyChain, auditLog, audit, type Db } from '../src/db.ts';
 import { fileURLToPath } from 'node:url';
 import { execute, view, replay, propose, getReceipt, HttpError, operationIdOf } from '../src/store.ts';
-import { seedDeploy, DEMO_ROLES } from '../src/scenarios.ts';
+import { SCENARIOS, DEMO_ROLES } from '../src/scenarios.ts';
+const seedDeploy = (db: Db, s: { sessionId: string; runId: string }, now: number, id: string) => SCENARIOS.find((x) => x.id === (id === 'canary' ? 'deploy-canary' : id))!.seed(db, s, now);
 import { ensureSession } from '../src/store.ts';
 import { readObs, publish } from '../src/world.ts';
 import { tx } from '../src/db.ts';
@@ -56,7 +57,7 @@ test('DEP-9 end to end: propose → EXECUTE → execute → receipt; retry repla
     const chain = verifyChain(db, S.sessionId, S.runId);
     assert.ok(chain.ok);
     assert.deepEqual(auditLog(db, S.sessionId, S.runId).map((r) => JSON.parse(r.envelope_json).type),
-      ['SESSION_STARTED', 'PROPOSED', 'EVALUATED', 'EVALUATED', 'EXECUTED']);
+      ['SESSION_STARTED', 'WORLD_SEEDED', 'PROPOSED', 'EVALUATED', 'EVALUATED', 'EXECUTED']);
   } finally { done(); }
 });
 
@@ -244,7 +245,7 @@ test('concurrency: 8 threads with separate SQLite connections execute the same o
 });
 
 test('adapter failure inside execute → rolled back, 503, nothing applied (no fail-open)', async () => {
-  const { DOMAINS } = await import('../src/world.ts');
+  const { DOMAINS } = await import('../src/domains.ts');
   const { db, done } = fresh();
   const orig = DOMAINS.deploy_release.apply;
   try {
@@ -254,4 +255,83 @@ test('adapter failure inside execute → rolled back, 503, nothing applied (no f
     assert.equal(count(db, 'SELECT count(*) n FROM receipts'), 0);
     assert.equal(generation(db), 88);
   } finally { DOMAINS.deploy_release.apply = orig; done(); }
+});
+
+// ---- Codex G2 regressions (decision-engine-planning/codex-sessions/gates/codex-g2-final.md) ----
+test('G2-01 the clock is read inside the execution transaction; evidence that expired while waiting blocks execution', () => {
+  const { db, done } = fresh();
+  try {
+    const { proposalId } = seedDeploy(db, S, NOW, 'canary');
+    let readInsideTx = false;
+    const r = execute(db, S, proposalId, 1, 'agent:deploy-bot', () => { readInsideTx = db.isTransaction; return NOW + 5 * MIN; }) as any;
+    assert.equal(readInsideTx, true);
+    assert.equal(r.status, 'NOT_EXECUTED'); // telemetry published 1 min before NOW is stale at NOW+5min
+    assert.ok(r.decision.obligations.some((g: any) => g.gateId === 'AVAIL(telemetry)'));
+    assert.equal(generation(db), 88);
+  } finally { done(); }
+});
+
+test('G2-02 an exception during COMMIT is UNCONFIRMED, never "nothing executed"; retry returns the receipt', () => {
+  const { db, done } = fresh();
+  try {
+    const { proposalId } = seedDeploy(db, S, NOW, 'canary');
+    throwsHttp(() => execute(db, S, proposalId, 1, 'agent:deploy-bot', NOW, { at: 'during-commit', mode: 'throw' }), 500, /UNCONFIRMED/);
+    assert.equal(generation(db), 89);
+    const r = execute(db, S, proposalId, 1, 'agent:deploy-bot', NOW + 1) as any;
+    assert.equal(r.replayed, true);
+  } finally { done(); }
+});
+
+test('G2-03 a claimed fromArtifact that differs from the deployed artifact is refused; recovery proof binds the real one', () => {
+  const { db, done } = fresh();
+  try {
+    seedDeploy(db, S, NOW, 'canary');
+    const p = propose(db, S, { actionType: 'deploy_release', initiatingPrincipal: 'agent:deploy-bot', proposer: { kind: 'MANUAL' },
+      params: { service: 'search-api', environment: 'prod', toArtifact: 'sha256:9f3c', fromArtifact: 'sha256:WRONG', trafficPercent: 1, intent: 'ROUTINE' } }, NOW);
+    const d = view(db, S, p.proposalId, NOW).decision!;
+    assert.equal(d.outcome, 'REFUSE');
+    assert.ok(d.obligations.some((g) => g.reasonCode === 'FROM_ARTIFACT_MISMATCH'));
+  } finally { done(); }
+});
+
+test('G2-04 re-seeding an existing session is refused (409); seeding is audited atomically', () => {
+  const { db, done } = fresh();
+  try {
+    seedDeploy(db, S, NOW, 'canary');
+    throwsHttp(() => seedDeploy(db, S, NOW, 'canary'), 409);
+    assert.equal(auditLog(db, S.sessionId, S.runId).filter((r) => JSON.parse(r.envelope_json).type === 'WORLD_SEEDED').length, 1);
+  } finally { done(); }
+});
+
+test('G2-05 replay detects a stored snapshot/decision that no longer matches its audit commitment', () => {
+  const { db, done } = fresh();
+  try {
+    const { proposalId } = seedDeploy(db, S, NOW, 'canary');
+    const v = view(db, S, proposalId, NOW);
+    assert.equal((replay(db, S, v.decisionId!) as any).identical, true);
+    const row = db.prepare('SELECT snapshot_json FROM decisions WHERE decision_id=?').get(v.decisionId!) as { snapshot_json: string };
+    db.prepare('UPDATE decisions SET snapshot_json=? WHERE decision_id=?').run(row.snapshot_json.replace('"PASS"', '"FAIL"'), v.decisionId!);
+    assert.equal((replay(db, S, v.decisionId!) as any).reason, 'STORED_DECISION_DOES_NOT_MATCH_AUDIT');
+  } finally { done(); }
+});
+
+test('G2-07 a receipt-id collision with another proposal is an integrity fault, never a foreign success', () => {
+  const { db, done } = fresh();
+  try {
+    const { proposalId } = seedDeploy(db, S, NOW, 'canary');
+    const op = operationIdOf(S, proposalId, 1);
+    db.prepare('INSERT INTO receipts VALUES (?,?,?,?,?,?,?)').run(op, 'sess-other', S.runId, 'prop-other', 1, '{"forged":true}', NOW);
+    throwsHttp(() => execute(db, S, proposalId, 1, 'agent:deploy-bot', NOW), 503, /integrity fault/);
+    assert.throws(() => view(db, S, proposalId, NOW), /integrity fault/);
+  } finally { done(); }
+});
+
+test('audit verification rejects a sequence gap', () => {
+  const { db, done } = fresh();
+  try {
+    seedDeploy(db, S, NOW, 'canary');
+    db.exec('DROP TRIGGER audit_no_delete');
+    db.prepare('DELETE FROM audit WHERE seq=2').run();
+    assert.equal(verifyChain(db, S.sessionId, S.runId).ok, false);
+  } finally { done(); }
 });

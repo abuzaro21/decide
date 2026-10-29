@@ -98,8 +98,10 @@ export function auditLog(db: Db, sessionId: string, runId: string) {
 export function verifyChain(db: Db, sessionId: string, runId: string, head?: { seq: number; hash: string }) {
   let prev = GENESIS;
   const rows = auditLog(db, sessionId, runId);
+  let expectSeq = 1;
   for (const r of rows) {
     const env = JSON.parse(r.envelope_json);
+    if (r.seq !== expectSeq++) return { ok: false, at: r.seq, reason: 'sequence gap' };
     if (r.prev_hash !== prev) return { ok: false, at: r.seq, reason: 'prev_hash mismatch' };
     if (env.seq !== r.seq || env.sessionId !== sessionId || env.runId !== runId) return { ok: false, at: r.seq, reason: 'envelope identity mismatch' };
     if (canonicalize(env) !== r.envelope_json) return { ok: false, at: r.seq, reason: 'non-canonical envelope' };

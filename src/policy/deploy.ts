@@ -13,7 +13,8 @@ const conflictBetween = (a: Record<string, any>, b: Record<string, any>) =>
 
 const p = (a: Action) => a.params as Record<string, any>;
 const drillSubject = (a: Action) => ({
-  from: String(p(a).fromArtifact), to: String(p(a).toArtifact), env: String(p(a).environment),
+  // `from` is the server-bound deployed artifact, never the requester's claim (G2-03).
+  from: String(a.expectedTargetVersions.currentArtifact), to: String(p(a).toArtifact), env: String(p(a).environment),
   schemaVersion: a.expectedTargetVersions.schemaVersion, configVersion: a.expectedTargetVersions.configVersion,
   procedureHash: a.recoveryScope.procedureHash,
 });
@@ -59,6 +60,9 @@ export const deployPolicy: Policy = {
     { id: 'D-TARGET', resolver: 'NONE', eval: (c) =>
       SERVICES[c.params.service] && ENVS.includes(c.params.environment) && Number.isInteger(c.params.trafficPercent) && c.params.trafficPercent >= 0 && c.params.trafficPercent <= 100
         ? { status: 'PASS' } : { status: 'FAIL', reasonCode: 'UNSUPPORTED_TARGET', observed: { service: c.params.service, environment: c.params.environment, trafficPercent: c.params.trafficPercent } } },
+    { id: 'D-FROM', resolver: 'NONE', eval: (c) =>
+      c.params.fromArtifact === c.action.expectedTargetVersions.currentArtifact ? { status: 'PASS' }
+        : { status: 'FAIL', reasonCode: 'FROM_ARTIFACT_MISMATCH', observed: c.params.fromArtifact, required: `the artifact actually deployed: ${c.action.expectedTargetVersions.currentArtifact}` } },
     { id: 'D-INTENT', resolver: 'NONE', eval: (c) =>
       c.params.intent === 'ROUTINE' ? { status: 'PASS' }
         : { status: 'FAIL', reasonCode: 'UNSUPPORTED_PATH', observed: c.params.intent, required: 'ROUTINE — incident remediation must use the incident procedure' } },
@@ -69,13 +73,13 @@ export const deployPolicy: Policy = {
       c.val('ci_result').status === 'PENDING' ? { status: 'FAIL', reasonCode: 'CI_PENDING' } : { status: 'PASS' } },
     { id: 'D-MIG-DESTRUCTIVE', resolver: 'NONE', reads: ['migration_class'], eval: (c) =>
       c.val('migration_class').class === 'DESTRUCTIVE' ? { status: 'FAIL', reasonCode: 'DESTRUCTIVE_MIGRATION' } : { status: 'PASS' } },
-    { id: 'D-TEL-CONFLICT', resolver: 'AUTHORITY', purpose: 'ADJUDICATE', role: 'sre-oncall', reads: ['telemetry'], eval: (c) => {
+    { id: 'D-TEL-CONFLICT', resolver: 'AUTHORITY', purpose: 'ADJUDICATE', role: 'sre-oncall', reads: ['telemetry'], decisions: ['SELECT_OBSERVATION', 'REJECT'], eval: (c) => {
       const conflict = telemetryConflict(c);
       if (!conflict) return { status: 'PASS' };
       const adj = c.adjudication('D-TEL-CONFLICT', conflictDigest(conflict));
       if (adj?.decision === 'REJECT') return { status: 'FAIL', resolver: 'NONE', reasonCode: 'ADJUDICATION_REJECTED' };
       if (adj?.decision === 'SELECT_OBSERVATION' && conflict.some((o) => obsId(o) === adj.selection)) return { status: 'PASS', observed: `selected ${adj.selection}` };
-      return { status: 'FAIL', reasonCode: 'TELEMETRY_SOURCES_DISAGREE', observed: conflict.map((o) => ({ source: o.sourceId, ...o.value })) };
+      return { status: 'FAIL', reasonCode: 'TELEMETRY_SOURCES_DISAGREE', observed: { conflictDigest: conflictDigest(conflict), candidates: conflict.map((o) => ({ observationId: obsId(o), source: o.sourceId, ...o.value })) } };
     } },
     { id: 'D-TEL-HEALTH', resolver: 'EXTERNAL', reads: ['telemetry'], dependsOn: ['D-TEL-CONFLICT'], timeout: { type: 'RW', ms: 15 * MIN },
       repair: { kind: 'telemetry', value: { errorRatePct: 0.4, p95Ms: 310 } }, eval: (c) => {

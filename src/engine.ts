@@ -113,6 +113,7 @@ export interface GateDef {
   dependsOn?: string[];
   timeout?: Timeout;
   repair?: { kind: string; value: Record<string, unknown> } | { approval: true };
+  decisions?: string[]; // typed adjudication decisions this gate accepts (06 §7.1)
   eval: (c: Ctx) => GateResultCore;
 }
 
@@ -462,7 +463,7 @@ export function approveGate(id: string): GateDef {
       const reasons = c.snapshot.approvals.map((ap) => approvalValid(c, ap, req));
       const ok = c.snapshot.approvals.find((_, i) => reasons[i] === null);
       if (ok) return { status: 'PASS', observed: { approvalId: ok.approvalId } };
-      return { status: 'FAIL', reasonCode: 'APPROVAL_REQUIRED', required: role, observed: reasons.filter(Boolean) };
+      return { status: 'FAIL', reasonCode: 'APPROVAL_REQUIRED', required: role, observed: { invalid: c.snapshot.approvals.map((ap, i) => ({ approvalId: ap.approvalId, reason: reasons[i] })).filter((x) => x.reason) } };
     },
   };
 }

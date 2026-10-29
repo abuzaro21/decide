@@ -2,20 +2,28 @@
   "name": "decide",
   "version": "0.1.0",
   "private": true,
-  "description": "DECIDE — The Action Boundary. A deterministic decision layer that tells an AI agent whether an authorized action may happen now, and if not, who must act first.",
+  "description": "DECIDE \u2014 The Action Boundary. A deterministic decision layer that tells an AI agent whether an authorized action may happen now, and if not, who must act first.",
   "type": "module",
   "engines": {
     "node": ">=24.13.0 <25"
   },
   "scripts": {
     "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node scripts/typecheck.mjs",
     "start": "node --disable-warning=ExperimentalWarning src/main.ts",
-    "spike:sqlite": "node --disable-warning=ExperimentalWarning spike/sqlite-spike.mjs"
+    "spike:sqlite": "node --disable-warning=ExperimentalWarning spike/sqlite-spike.mjs",
+    "build": "vite build",
+    "dev:ui": "vite"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
-    "typescript": "5.9.3"
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.4"
   },
   "dependencies": {
     "zod": "4.6.7"

@@ -117,3 +117,22 @@ test('API: session isolation and run reset (old-run cookie → 410, foreign sess
     assert.equal(anon.status, 401);
   } finally { await stop(); }
 });
+
+test('G2-06 malformed URLs get a 400 and the server stays up; missing service reaches ASK (not 409)', async () => {
+  const { base, stop } = await start();
+  try {
+    const { request } = await import('node:http');
+    const u = new URL(base);
+    const status = await new Promise<number>((resolve, reject) => {
+      const r = request({ host: u.hostname, port: u.port, path: '/%', method: 'GET' }, (res) => { res.resume(); resolve(res.statusCode!); });
+      r.on('error', reject); r.end();
+    });
+    assert.equal(status, 400);
+    assert.equal((await fetch(`${base}/api/health`)).status, 200);
+    const { call } = await client(base);
+    await call('POST', '/api/scenarios/deploy-canary');
+    const p = await call('POST', '/api/proposals', { actionType: 'deploy_release', params: { environment: 'prod', toArtifact: 'a', fromArtifact: 'b', trafficPercent: 1, intent: 'ROUTINE' } });
+    assert.equal(p.status, 200);
+    assert.equal((await call('GET', `/api/proposals/${p.body.proposalId}`)).body.decision.outcome, 'ASK');
+  } finally { await stop(); }
+});

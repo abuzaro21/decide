@@ -1,9 +1,10 @@
 // Durable decision store and the ONE execution path (06 §2, §8, §10; 05 §7).
 import { randomUUID } from 'node:crypto';
 import { canonicalize, digest, sha256 } from './canonical.ts';
-import { audit, tx, type Db } from './db.ts';
+import { audit, auditLog, tx, verifyChain, type Db } from './db.ts';
 import { evaluateCore, explainRepairs, fingerprint, type Action, type Approval, type Adjudication, type Decision, type Snapshot, type Timer } from './engine.ts';
-import { collect, DOMAINS, EVALUATOR_VERSION, type Scope } from './world.ts';
+import { collect, EVALUATOR_VERSION, type Scope } from './world.ts';
+import { DOMAINS } from './domains.ts';
 
 export class HttpError extends Error {
   status: number;
@@ -13,7 +14,7 @@ export class HttpError extends Error {
 
 export interface Proposer { kind: 'LIVE_LLM' | 'RECORDED_LLM' | 'MANUAL'; model?: string; recordedAt?: string; recordingId?: string; agentConfidence?: number; rationale?: string; prompt?: string }
 
-export type FaultPoint = 'after-mutation' | 'after-audit' | 'before-commit' | 'after-commit';
+export type FaultPoint = 'after-mutation' | 'after-audit' | 'before-commit' | 'during-commit' | 'after-commit';
 export interface Faults { at: FaultPoint; mode: 'throw' | 'exit' }
 
 const domainOf = (actionType: string) => {
@@ -35,7 +36,7 @@ export function ensureSession(db: Db, s: Scope, now: number, roles: Record<strin
   });
 }
 
-function loadProposal(db: Db, s: Scope, proposalId: string, revision?: number): PropRow {
+export function loadProposal(db: Db, s: Scope, proposalId: string, revision?: number): PropRow {
   const row = (revision === undefined
     ? db.prepare('SELECT * FROM proposals WHERE session_id=? AND run_id=? AND proposal_id=? ORDER BY revision DESC LIMIT 1').get(s.sessionId, s.runId, proposalId)
     : db.prepare('SELECT * FROM proposals WHERE session_id=? AND run_id=? AND proposal_id=? AND revision=?').get(s.sessionId, s.runId, proposalId, revision)) as PropRow | undefined;
@@ -88,7 +89,7 @@ export function buildSnapshot(db: Db, s: Scope, row: PropRow, now: number): Snap
 }
 
 /** Persist a decision, its timers and lifecycle transition, plus an audit event when the decision changed. Inside a transaction. */
-function record(db: Db, s: Scope, row: PropRow, snap: Snapshot, d: Decision, now: number, context: 'view' | 'execute') {
+export function record(db: Db, s: Scope, row: PropRow, snap: Snapshot, d: Decision, now: number, context: 'view' | 'execute') {
   const key = [s.sessionId, s.runId, row.proposal_id, row.revision] as const;
   const last = db.prepare('SELECT decision_id, decision_json FROM decisions WHERE session_id=? AND run_id=? AND proposal_id=? AND revision=? ORDER BY at DESC, rowid DESC LIMIT 1').get(...key) as { decision_id: string; decision_json: string } | undefined;
   // Timers: upsert started/changed, clear those whose gate is no longer an unresolved EXTERNAL failure.
@@ -104,11 +105,19 @@ function record(db: Db, s: Scope, row: PropRow, snap: Snapshot, d: Decision, now
   let decisionId = last?.decision_id ?? '';
   if (changed) {
     decisionId = `dec-${randomUUID()}`;
-    db.prepare('INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(decisionId, s.sessionId, s.runId, row.proposal_id, row.revision, d.outcome, context, canonicalize(snap), canonicalize(d), d.policyHash, d.evaluatorVersion, now);
+    const snapJson = canonicalize(snap);
+    const decJson = canonicalize(d);
+    db.prepare('INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(decisionId, s.sessionId, s.runId, row.proposal_id, row.revision, d.outcome, context, snapJson, decJson, d.policyHash, d.evaluatorVersion, now);
     audit(db, s.sessionId, s.runId, now, {
       type: 'EVALUATED', proposalId: row.proposal_id, revision: row.revision, decisionId, actor: 'engine',
-      payload: { context, outcome: d.outcome, obligations: d.obligations.map((g) => ({ gateId: g.gateId, resolver: g.resolver, purpose: g.purpose, role: g.role, reasonCode: g.reasonCode })), fingerprint: d.fingerprint, snapshotRoot: d.snapshotRoot, policyHash: d.policyHash, evaluatorVersion: d.evaluatorVersion, risk: d.risk },
+      payload: { context, outcome: d.outcome, obligations: d.obligations.map((g) => ({ gateId: g.gateId, resolver: g.resolver, purpose: g.purpose, role: g.role, reasonCode: g.reasonCode })), fingerprint: d.fingerprint, snapshotRoot: d.snapshotRoot, policyHash: d.policyHash, evaluatorVersion: d.evaluatorVersion, risk: d.risk, snapshotDigest: sha256(snapJson), decisionDigest: sha256(decJson) },
     });
+  }
+  // Approvals the engine just found invalid are marked so, with the reason, in this same transaction (audited).
+  const appr = d.gates.find((g) => g.status === 'FAIL' && g.purpose === 'APPROVE');
+  for (const x of ((appr?.observed as any)?.invalid ?? []) as { approvalId: string; reason: string }[]) {
+    const r = db.prepare("UPDATE approvals SET status='INVALIDATED' WHERE approval_id=? AND session_id=? AND run_id=? AND status='ACTIVE'").run(x.approvalId, s.sessionId, s.runId);
+    if (Number(r.changes) === 1) audit(db, s.sessionId, s.runId, now, { type: 'APPROVAL_INVALIDATED', proposalId: row.proposal_id, revision: row.revision, actor: 'engine', payload: x });
   }
   if (d.outcome === 'REFUSE') {
     db.prepare("UPDATE proposals SET status='CLOSED_REFUSED' WHERE session_id=? AND run_id=? AND proposal_id=? AND revision=? AND status='OPEN'").run(...key);
@@ -130,10 +139,10 @@ export function view(db: Db, s: Scope, proposalId: string, now: number, revision
   return tx(db, () => {
     const row = loadProposal(db, s, proposalId, revision);
     const base = { proposalId, revision: row.revision, action: JSON.parse(row.action_json) as Action, proposer: JSON.parse(row.proposer_json) as Proposer, operationId: operationIdOf(s, proposalId, row.revision) };
-    const receipt = db.prepare('SELECT receipt_json FROM receipts WHERE operation_id=?').get(base.operationId) as { receipt_json: string } | undefined;
+    const ownedReceipt = ownReceipt(db, s, base.operationId, proposalId, row.revision);
     if (row.status !== 'OPEN') {
       const last = db.prepare('SELECT decision_id, decision_json FROM decisions WHERE session_id=? AND run_id=? AND proposal_id=? AND revision=? ORDER BY at DESC, rowid DESC LIMIT 1').get(s.sessionId, s.runId, proposalId, row.revision) as { decision_id: string; decision_json: string } | undefined;
-      return { ...base, status: row.status, decisionId: last?.decision_id ?? null, decision: last ? JSON.parse(last.decision_json) : null, receipt: receipt ? JSON.parse(receipt.receipt_json) : null };
+      return { ...base, status: row.status, decisionId: last?.decision_id ?? null, decision: last ? JSON.parse(last.decision_json) : null, receipt: ownedReceipt };
     }
     const snap = buildSnapshot(db, s, row, now);
     const d = evaluateCore(domainOf(base.action.actionType).policy, snap, meta(base.action.actionType));
@@ -156,60 +165,75 @@ export type ExecResult =
   | { status: 'SUCCEEDED'; operationId: string; receipt: Record<string, unknown>; replayed: boolean }
   | { status: 'NOT_EXECUTED'; operationId: string; decisionId: string; decision: Decision };
 
+/** A clock is read only once the transaction lock is held (G2-01): never trust a timestamp taken before waiting. */
+export type Clock = number | (() => number);
+export const readClock = (c: Clock) => (typeof c === 'function' ? c() : c);
+
+/** Receipt for exactly this (session, run, proposal, revision). A row with the same id but other ownership is an integrity fault, never a success (G2-07). */
+function ownReceipt(db: Db, s: Scope, operationId: string, proposalId: string, revision: number) {
+  const r = db.prepare('SELECT receipt_json, session_id, run_id, proposal_id, revision FROM receipts WHERE operation_id=?').get(operationId) as
+    { receipt_json: string; session_id: string; run_id: string; proposal_id: string; revision: number } | undefined;
+  if (!r) return null;
+  if (r.session_id !== s.sessionId || r.run_id !== s.runId || r.proposal_id !== proposalId || r.revision !== revision)
+    throw new Error('integrity fault: operation id collides with a receipt owned by another proposal');
+  return JSON.parse(r.receipt_json) as Record<string, unknown>;
+}
+
 /**
  * The single authoritative execution path. One BEGIN IMMEDIATE transaction:
  * receipt lookup → revision OPEN → re-collect → evaluateCore(LIVE) (incl. VERSIONS + approval validity)
  * → simulated effect + approval consumption + receipt + audit → COMMIT. Any failure before COMMIT rolls back.
  */
-export function execute(db: Db, s: Scope, proposalId: string, revision: number, actor: string, now: number, faults?: Faults): ExecResult {
+export function execute(db: Db, s: Scope, proposalId: string, revision: number, actor: string, clock: Clock, faults?: Faults): ExecResult {
   const operationId = operationIdOf(s, proposalId, revision);
   const fault = (at: FaultPoint) => {
     if (faults?.at !== at) return;
     if (faults.mode === 'exit') process.exit(86); // simulated crash: no ROLLBACK, no COMMIT
     throw new Error(`injected fault at ${at}`);
   };
-  let committed = false;
+  // none = no COMMIT issued (a rollback proves no effect) · attempted = COMMIT issued, outcome unknown · done = COMMIT returned.
+  const st = { commit: 'none' as 'none' | 'attempted' | 'done' };
+  const doCommit = () => { st.commit = 'attempted'; db.exec('COMMIT'); fault('during-commit'); st.commit = 'done'; };
   try {
     db.exec('BEGIN IMMEDIATE');
     let result: ExecResult;
     try {
-      const existing = db.prepare('SELECT receipt_json, session_id, run_id FROM receipts WHERE operation_id=?').get(operationId) as { receipt_json: string; session_id: string; run_id: string } | undefined;
-      if (existing) {
-        db.exec('COMMIT'); committed = true;
-        return { status: 'SUCCEEDED', operationId, receipt: JSON.parse(existing.receipt_json), replayed: true };
-      }
+      const now = readClock(clock);
+      const existing = ownReceipt(db, s, operationId, proposalId, revision);
+      if (existing) { doCommit(); return { status: 'SUCCEEDED', operationId, receipt: existing, replayed: true }; }
       const row = loadProposal(db, s, proposalId, revision);
       if (row.status !== 'OPEN') throw new HttpError(409, { error: `revision is ${row.status}`, status: row.status });
       const snap = buildSnapshot(db, s, row, now);
       const dom = domainOf(snap.action.actionType);
       const d = evaluateCore(dom.policy, snap, meta(snap.action.actionType));
       const decisionId = record(db, s, row, snap, d, now, 'execute');
-      if (d.outcome !== 'EXECUTE') {
-        db.exec('COMMIT'); committed = true;
-        return { status: 'NOT_EXECUTED', operationId, decisionId, decision: d };
-      }
+      if (d.outcome !== 'EXECUTE') { doCommit(); return { status: 'NOT_EXECUTED', operationId, decisionId, decision: d }; }
       const effect = dom.apply(db, s, snap.action, now);
       fault('after-mutation');
       const approvalId = (d.gates.find((g) => (g.observed as any)?.approvalId)?.observed as any)?.approvalId as string | undefined;
-      if (approvalId) db.prepare("UPDATE approvals SET status='CONSUMED' WHERE approval_id=? AND session_id=? AND run_id=? AND status='ACTIVE'").run(approvalId, s.sessionId, s.runId);
+      if (approvalId) {
+        const used = db.prepare("UPDATE approvals SET status='CONSUMED' WHERE approval_id=? AND session_id=? AND run_id=? AND proposal_id=? AND revision=? AND status='ACTIVE'").run(approvalId, s.sessionId, s.runId, proposalId, revision);
+        if (Number(used.changes) !== 1) throw new Error('approval could not be consumed exactly once');
+      }
       const receipt = { operationId, proposalId, revision, fingerprint: d.fingerprint, decisionId, approvalId: approvalId ?? null, effect, executedAt: now, actor };
       db.prepare('INSERT INTO receipts VALUES (?,?,?,?,?,?,?)').run(operationId, s.sessionId, s.runId, proposalId, revision, canonicalize(receipt), now);
       db.prepare("UPDATE proposals SET status='CLOSED_EXECUTED' WHERE session_id=? AND run_id=? AND proposal_id=? AND revision=?").run(s.sessionId, s.runId, proposalId, revision);
       audit(db, s.sessionId, s.runId, now, { type: 'EXECUTED', proposalId, revision, decisionId, actor, payload: receipt });
       fault('after-audit');
       fault('before-commit');
-      db.exec('COMMIT'); committed = true;
+      doCommit();
       result = { status: 'SUCCEEDED', operationId, receipt, replayed: false };
     } catch (e) {
-      if (!committed && db.isTransaction) db.exec('ROLLBACK');
+      // Still inside the transaction ⇒ nothing was committed: roll back, and the effect provably did not happen.
+      if (st.commit !== 'done' && db.isTransaction) { db.exec('ROLLBACK'); st.commit = 'none'; }
       throw e;
     }
     fault('after-commit');
     return result;
   } catch (e) {
     if (e instanceof HttpError) throw e;
-    // Before COMMIT: the rollback above guarantees no effect. After a possible COMMIT: the outcome is unknown to the caller.
-    throw new HttpError(committed ? 500 : 503, committed
+    const unknown = st.commit !== 'none'; // a COMMIT was issued: this response cannot tell the caller whether the effect happened
+    throw new HttpError(unknown ? 500 : 503, unknown
       ? { status: 'UNCONFIRMED', operationId, error: 'result unconfirmed; retry the same operation to retrieve its receipt' }
       : { status: 'UNAVAILABLE_PRE_COMMIT', operationId, error: 'no decision made, nothing executed', cause: String((e as Error).message) });
   }
@@ -225,6 +249,13 @@ export function getReceipt(db: Db, s: Scope, operationId: string) {
 export function replay(db: Db, s: Scope, decisionId: string) {
   const r = db.prepare('SELECT snapshot_json, decision_json, evaluator_version FROM decisions WHERE decision_id=? AND session_id=? AND run_id=?').get(decisionId, s.sessionId, s.runId) as { snapshot_json: string; decision_json: string; evaluator_version: string } | undefined;
   if (!r) throw new HttpError(404, { error: 'decision not found in this session' });
+  // The EVALUATED audit event committed to digests of the exact stored snapshot and decision; verify before replaying (G2-05).
+  const chain = verifyChain(db, s.sessionId, s.runId);
+  if (!chain.ok) return { replayable: false, reason: `AUDIT_CHAIN_INVALID(${(chain as any).reason})` };
+  const ev = auditLog(db, s.sessionId, s.runId).map((x) => JSON.parse(x.envelope_json)).find((x) => x.type === 'EVALUATED' && x.decisionId === decisionId);
+  if (!ev) return { replayable: false, reason: 'NO_AUDIT_COMMITMENT' };
+  if (ev.payload.snapshotDigest !== sha256(r.snapshot_json) || ev.payload.decisionDigest !== sha256(r.decision_json))
+    return { replayable: false, reason: 'STORED_DECISION_DOES_NOT_MATCH_AUDIT' };
   if (r.evaluator_version !== EVALUATOR_VERSION) return { replayable: false, reason: `NOT_REPLAYABLE(evaluator ${r.evaluator_version} != ${EVALUATOR_VERSION})` };
   const snap = JSON.parse(r.snapshot_json) as Snapshot;
   const recorded = JSON.parse(r.decision_json) as Decision;

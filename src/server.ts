@@ -7,17 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { openDb, tx, audit, auditLog, verifyChain, type Db } from './db.ts';
 import { ensureSession, execute, getReceipt, HttpError, propose, replay, view, whatWouldChange, type Proposer } from './store.ts';
+import { adjudicate, review } from './review.ts';
 import { CONTROLS, DEMO_ROLES, SCENARIOS } from './scenarios.ts';
-import { DOMAINS, EVALUATOR_VERSION, publish, type Scope } from './world.ts';
+import { EVALUATOR_VERSION, publish, type Scope } from './world.ts';
+import { DOMAINS } from './domains.ts';
+import { loadRecordings, proposeLive, PROPOSER_MODEL } from './proposer.ts';
 
-// ---- Ingress contracts (strict: unknown keys and wrong types are 400; absent fields reach FIELDS → ASK) ----
+import { PARAMS } from './contracts.ts';
 const Str = z.string().min(1).max(200);
-export const PARAMS: Record<string, z.ZodType> = {
-  deploy_release: z.strictObject({
-    service: Str.optional(), environment: Str.optional(), toArtifact: Str.optional(), fromArtifact: Str.optional(),
-    trafficPercent: z.number().int().optional(), intent: Str.optional(),
-  }),
-};
 const ProposerIn = z.strictObject({
   kind: z.enum(['LIVE_LLM', 'RECORDED_LLM', 'MANUAL']).default('MANUAL'), model: Str.optional(), recordedAt: Str.optional(), recordingId: Str.optional(),
   agentConfidence: z.number().min(0).max(1).optional(), rationale: z.string().max(4000).optional(), prompt: z.string().max(4000).optional(),
@@ -27,6 +24,8 @@ const ReviseIn = z.strictObject({ params: z.record(z.string(), z.unknown()), pro
 const ControlIn = z.strictObject({ control: Str });
 const EvidenceIn = z.strictObject({ kind: Str, sourceId: Str, subject: z.record(z.string(), z.union([z.string(), z.number()])), value: z.record(z.string(), z.unknown()) });
 const ClockIn = z.strictObject({ advanceMinutes: z.number().int().min(1).max(24 * 60) });
+const ReviewIn = z.strictObject({ approverId: Str, verdict: z.enum(['APPROVE', 'REJECT']) });
+const AdjudicateIn = z.strictObject({ actor: Str, gateId: Str, decision: Str, selection: Str.optional() });
 
 const parse = <T>(schema: z.ZodType<T>, v: unknown): T => {
   const r = schema.safeParse(v);
@@ -71,7 +70,7 @@ export function createApp(opts: AppOptions) {
 
   type Route = [string, RegExp, (req: IncomingMessage, m: RegExpMatchArray, res: ServerResponse) => Promise<unknown> | unknown];
   const routes: Route[] = [
-    ['GET', /^\/api\/health$/, () => ({ ok: true, runId, startedAt, evaluatorVersion: EVALUATOR_VERSION, policies: Object.fromEntries(Object.entries(DOMAINS).map(([k, d]) => [k, d.policyHash])), persistence: 'SQLite file for the lifetime of this run; a restart starts a new run' })],
+    ['GET', /^\/api\/health$/, () => ({ ok: true, runId, startedAt, evaluatorVersion: EVALUATOR_VERSION, liveProposer: !!process.env.ANTHROPIC_API_KEY, policies: Object.fromEntries(Object.entries(DOMAINS).map(([k, d]) => [k, d.policyHash])), persistence: 'SQLite file for the lifetime of this run; a restart starts a new run' })],
     ['POST', /^\/api\/session$/, (_req, _m, res) => {
       const s = { sessionId: `sess-${randomUUID()}`, runId };
       ensureSession(db, s, clockFor(s), DEMO_ROLES);
@@ -85,6 +84,20 @@ export function createApp(opts: AppOptions) {
       const sc = SCENARIOS.find((x) => x.id === m[1]);
       if (!sc) throw new HttpError(404, { error: 'unknown scenario' });
       return sc.seed(db, s, clockFor(s));
+    }],
+    // Genuine recorded proposer outputs (keyless mode). Shown verbatim with their model id and recording time.
+    ['GET', /^\/api\/recordings$/, () => loadRecordings().map(({ recordingId, scenarioId, model, recordedAt, via, request, rawOutput, parsed }) => ({ recordingId, scenarioId, model, recordedAt, via, request, rawOutput, parsed }))],
+    // Optional live proposer: only when ANTHROPIC_API_KEY is configured on the server. Its output is untrusted input like any other proposal.
+    ['POST', /^\/api\/agent$/, async (req) => {
+      const s = sessionOf(req);
+      const { request } = parse(z.strictObject({ request: z.string().min(1).max(2000) }), await body(req));
+      const key = process.env.ANTHROPIC_API_KEY;
+      if (!key) throw new HttpError(503, { error: 'live proposer not configured on this server; recorded genuine outputs are used instead' });
+      const live = await proposeLive(request, key);
+      const params = PARAMS[live.parsed.actionType] ? parse(PARAMS[live.parsed.actionType], live.parsed.params) as Record<string, unknown> : live.parsed.params;
+      if (!DOMAINS[live.parsed.actionType]) throw new HttpError(422, { error: 'the model proposed an unsupported action type', raw: live.raw });
+      return { raw: live.raw, model: live.model, ...propose(db, s, { actionType: live.parsed.actionType, params, initiatingPrincipal: AGENT,
+        proposer: { kind: 'LIVE_LLM', model: live.model || PROPOSER_MODEL, agentConfidence: live.parsed.agentConfidence, rationale: live.parsed.rationale, prompt: request } }, clockFor(s)) };
     }],
     ['GET', /^\/api\/controls$/, () => CONTROLS.map(({ id, label, domain }) => ({ id, label, domain }))],
     ['POST', /^\/api\/proposals$/, async (req) => {
@@ -104,7 +117,22 @@ export function createApp(opts: AppOptions) {
     }],
     ['GET', /^\/api\/proposals\/([\w-]+)$/, (req, m) => { const s = sessionOf(req); return view(db, s, m[1], clockFor(s)); }],
     ['GET', /^\/api\/proposals\/([\w-]+)\/what-would-change$/, (req, m) => { const s = sessionOf(req); return whatWouldChange(db, s, m[1], clockFor(s)); }],
-    ['POST', /^\/api\/proposals\/([\w-]+)\/revisions\/(\d+)\/execute$/, (req, m) => { const s = sessionOf(req); return execute(db, s, m[1], Number(m[2]), AGENT, clockFor(s)); }],
+    // The clock is read INSIDE the execution transaction, after the write lock is held (G2-01).
+    ['POST', /^\/api\/proposals\/([\w-]+)\/revisions\/(\d+)\/execute$/, (req, m) => { const s = sessionOf(req); return execute(db, s, m[1], Number(m[2]), AGENT, () => clockFor(s)); }],
+    ['POST', /^\/api\/proposals\/([\w-]+)\/revisions\/(\d+)\/review$/, async (req, m) => {
+      const s = sessionOf(req); const b = parse(ReviewIn, await body(req));
+      return review(db, s, m[1], Number(m[2]), b.approverId, b.verdict, () => clockFor(s));
+    }],
+    ['POST', /^\/api\/proposals\/([\w-]+)\/revisions\/(\d+)\/adjudicate$/, async (req, m) => {
+      const s = sessionOf(req); const b = parse(AdjudicateIn, await body(req));
+      return adjudicate(db, s, m[1], Number(m[2]), b.actor, { gateId: b.gateId, decision: b.decision, selection: b.selection }, () => clockFor(s));
+    }],
+    // Ground truth the engine never sees (K-1 known failure) — shown so the failure is honest, not hidden.
+    ['GET', /^\/api\/ground-truth$/, (req) => {
+      const s = sessionOf(req);
+      return (db.prepare("SELECT subject_json, value_json FROM world_obs WHERE session_id=? AND run_id=? AND kind='ground_truth'").all(s.sessionId, s.runId) as { subject_json: string; value_json: string }[])
+        .map((r) => ({ subject: JSON.parse(r.subject_json), ...JSON.parse(r.value_json) }));
+    }],
     ['POST', /^\/api\/proposals\/([\w-]+)\/world$/, async (req, m) => {
       const s = sessionOf(req);
       const { control } = parse(ControlIn, await body(req));
@@ -147,6 +175,14 @@ export function createApp(opts: AppOptions) {
   ];
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
+    try { await route(req, res); }
+    catch (e) { // last line of defence: a malformed request must never take the process down (G2-06)
+      if (!res.headersSent) send(res, e instanceof HttpError ? e.status : 400, e instanceof HttpError ? e.body : { error: 'bad request' });
+      else res.destroy();
+    }
+  }
+
+  async function route(req: IncomingMessage, res: ServerResponse) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     const url = new URL(req.url ?? '/', 'http://local');
@@ -175,7 +211,9 @@ function send(res: ServerResponse, status: number, payload: unknown) {
 }
 
 function serveStatic(pathname: string, res: ServerResponse) {
-  const rel = normalize(decodeURIComponent(pathname)).replace(/^([/\\])+/, '');
+  let decoded: string;
+  try { decoded = decodeURIComponent(pathname); } catch { throw new HttpError(400, { error: 'malformed URL' }); }
+  const rel = normalize(decoded).replace(/^([/\\])+/, '');
   let file = join(PUBLIC_DIR, rel || 'index.html');
   if (!file.startsWith(PUBLIC_DIR) || !existsSync(file) || statSync(file).isDirectory()) file = join(PUBLIC_DIR, 'index.html');
   if (!existsSync(file)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('UI not built'); return; }
