@@ -460,7 +460,8 @@ export function approveGate(id: string): GateDef {
       const { snapshotRoot, preconditions } = snapshotBinding(c);
       const req = { fingerprint: fingerprint(c.action), ...c.meta, snapshotRoot, preconditions, role };
       const reasons = c.snapshot.approvals.map((ap) => approvalValid(c, ap, req));
-      if (reasons.some((x) => x === null)) return { status: 'PASS', observed: 'valid snapshot approval' };
+      const ok = c.snapshot.approvals.find((_, i) => reasons[i] === null);
+      if (ok) return { status: 'PASS', observed: { approvalId: ok.approvalId } };
       return { status: 'FAIL', reasonCode: 'APPROVAL_REQUIRED', required: role, observed: reasons.filter(Boolean) };
     },
   };

@@ -4,15 +4,20 @@
   "private": true,
   "description": "DECIDE — The Action Boundary. A deterministic decision layer that tells an AI agent whether an authorized action may happen now, and if not, who must act first.",
   "type": "module",
-  "engines": { "node": ">=24.13.0 <25" },
+  "engines": {
+    "node": ">=24.13.0 <25"
+  },
   "scripts": {
     "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "start": "node --disable-warning=ExperimentalWarning src/server.ts",
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
     "spike:sqlite": "node --disable-warning=ExperimentalWarning spike/sqlite-spike.mjs"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
   }
 }
