@@ -335,3 +335,47 @@ test('audit verification rejects a sequence gap', () => {
     assert.equal(verifyChain(db, S.sessionId, S.runId).ok, false);
   } finally { done(); }
 });
+
+// ---- Codex G3-03 / G3-04 regressions (precise, store level) ----
+import { review } from '../src/review.ts';
+const telOf = (db: Db, svc: string, apm: number, syn: number | null, at: number) => tx(db, () => {
+  const subject = { service: svc, env: 'prod', windowSec: 300 };
+  publish(db, S, { kind: 'telemetry', sourceId: 'apm', sourceClass: 'ADAPTER', subject, value: { errorRatePct: apm, p95Ms: 310 } }, at);
+  if (syn !== null) publish(db, S, { kind: 'telemetry', sourceId: 'synthetic', sourceClass: 'ADAPTER', subject, value: { errorRatePct: syn, p95Ms: 330 } }, at);
+});
+
+test('G3-03 an approval invalidated while APPROVE is BLOCKED stays dead after the world is restored', () => {
+  const { db, done } = fresh();
+  try {
+    const { proposalId } = seedDeploy(db, S, NOW, 'deploy-ready');
+    const v = view(db, S, proposalId, NOW);
+    assert.equal(v.decision!.outcome, 'ESCALATE');
+    assert.equal(review(db, S, proposalId, 1, 'human:rhea', 'APPROVE', v.decision!.reviewToken, NOW).decision!.outcome, 'EXECUTE');
+    const subj = { service: 'checkout-api', env: 'prod' };
+    const st = readObs(db, S, 'deploy_state', 'deployer', subj)!.value;
+    tx(db, () => publish(db, S, { kind: 'deploy_state', sourceId: 'deployer', sourceClass: 'ADAPTER', subject: subj, value: { ...st, lockHolder: 'deploy-7731' } }, NOW + 1));
+    assert.equal(view(db, S, proposalId, NOW + 2).decision!.outcome, 'DEFER');
+    tx(db, () => publish(db, S, { kind: 'deploy_state', sourceId: 'deployer', sourceClass: 'ADAPTER', subject: subj, value: st }, NOW + 3));
+    const after = view(db, S, proposalId, NOW + 4).decision!;
+    assert.equal(after.outcome, 'ESCALATE', 'the restored world needs a fresh approval');
+    assert.equal(count(db, "SELECT count(*) n FROM approvals WHERE status='INVALIDATED'"), 1);
+  } finally { done(); }
+});
+
+test('G3-04 a timer survives while its gate is BLOCKED; the original deadline still applies', () => {
+  const { db, done } = fresh();
+  try {
+    const { proposalId } = seedDeploy(db, S, NOW, 'deploy-ready');
+    telOf(db, 'checkout-api', 3.2, 3.2, NOW);
+    const t0 = view(db, S, proposalId, NOW).decision!;
+    assert.equal(t0.obligations.find((g) => g.gateId === 'D-TEL-HEALTH')!.deadlineAt, NOW + 15 * MIN);
+    telOf(db, 'checkout-api', 3.2, 0.5, NOW + 10 * MIN); // sources now disagree → health BLOCKED
+    const mid = view(db, S, proposalId, NOW + 10 * MIN).decision!;
+    assert.equal(mid.gates.find((g) => g.gateId === 'D-TEL-HEALTH')!.status, 'BLOCKED');
+    assert.equal(count(db, "SELECT count(*) n FROM gate_timers WHERE gate_id='D-TEL-HEALTH'"), 1, 'timer retained while BLOCKED');
+    telOf(db, 'checkout-api', 3.2, 3.2, NOW + 16 * MIN); // agreeing red again, past the original deadline
+    const late = view(db, S, proposalId, NOW + 16 * MIN).decision!;
+    assert.equal(late.outcome, 'ESCALATE');
+    assert.equal(late.obligations.find((g) => g.gateId === 'D-TEL-HEALTH')!.purpose, 'TIMEOUT');
+  } finally { done(); }
+});

@@ -179,6 +179,10 @@ export interface Decision {
   display: Display;
   timerUpdates: Record<string, Timer>;
   mode: Mode;
+  /** Validity of every ACTIVE approval against the CURRENT state, computed whatever the APPROVE gate's status (G3-03). */
+  approvalChecks: { approvalId: string; reason: string | null }[];
+  /** Digest of exactly what a reviewer is shown; a review command must echo it (G3-01). */
+  reviewToken: string;
 }
 
 export interface Display {
@@ -305,7 +309,7 @@ export function evaluateCore(policy: Policy, snap: Snapshot, meta: Meta, mode: M
   // Step 0: unsupported action type terminates before any adapter call.
   if (a.actionType !== policy.actionType) {
     const g: GateResult = { gateId: 'CONTRACT', status: 'FAIL', resolver: 'NONE', dependsOn: [], reasonCode: 'UNSUPPORTED_ACTION', observed: a.actionType };
-    return finish([g], { ...base, rejected: [], admittedIds: [], snapshotRoot: digest([]), preconditions: {}, risk: null, timerUpdates: {} }, snap, policy);
+    return finish([g], { ...base, rejected: [], admittedIds: [], snapshotRoot: digest([]), preconditions: {}, risk: null, timerUpdates: {}, approvalChecks: [], reviewToken: '' }, snap, policy);
   }
   results.set('CONTRACT', { gateId: 'CONTRACT', status: 'PASS', dependsOn: [] });
 
@@ -389,10 +393,17 @@ export function evaluateCore(policy: Policy, snap: Snapshot, meta: Meta, mode: M
   const admittedAll = Object.values(admitted).flat();
   const { snapshotRoot, preconditions } = binding(policy, admitted, snap);
   const risk = results.get('FIELDS')?.status === 'PASS' ? ctx.risk() : null;
+  const role = risk ? policy.requiredRole(risk.tier) : null;
+  const approvalChecks = snap.approvals.filter((ap) => ap.status === 'ACTIVE').map((ap) => ({
+    approvalId: ap.approvalId,
+    reason: !risk ? 'proposal incomplete' : !role ? 'approval no longer required at this risk' :
+      approvalValid(ctx, ap, { fingerprint: base.fingerprint, ...meta, snapshotRoot, preconditions, role }),
+  }));
+  const reviewToken = digest({ fingerprint: base.fingerprint, policyHash: meta.policyHash, evaluatorVersion: meta.evaluatorVersion, snapshotRoot, preconditions, risk });
   return finish([...results.values()], {
     ...base, rejected,
     admittedIds: admittedAll.map(observationId).sort(),
-    snapshotRoot, preconditions, risk, timerUpdates,
+    snapshotRoot, preconditions, risk, timerUpdates, approvalChecks, reviewToken,
   }, snap, policy);
 }
 

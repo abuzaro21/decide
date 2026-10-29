@@ -65,7 +65,8 @@ export const DOMAINS: Record<string, Domain> = {
       publish(db, s, { kind: 'invoice_state', sourceId: 'erp', sourceClass: 'ADAPTER', subject: invSubject, value: { ...inv.value, openBalanceCents: left, status: left === 0 ? 'SETTLED' : 'OPEN', version: Number(inv.value.version) + 1 } }, now);
       const expSubject = { vendorId: String(p.vendorId), windowDays: 30 };
       const exp = readObs(db, s, 'vendor_exposure', 'ledger', expSubject)!;
-      publish(db, s, { kind: 'vendor_exposure', sourceId: 'ledger', sourceClass: 'ADAPTER', subject: expSubject, value: { settledCents: Number(exp.value.settledCents) + p.amountCents } }, now);
+      const settlements = [...((exp.value.settlements as { at: number; cents: number }[]) ?? []), { at: now, cents: p.amountCents }];
+      publish(db, s, { kind: 'vendor_exposure', sourceId: 'ledger', sourceClass: 'ADAPTER', subject: expSubject, value: { settlements } }, now);
       return { effect: 'PAID', vendorId: p.vendorId, invoiceId: p.invoiceId, amountCents: p.amountCents, rail: p.rail, toAccount: a.expectedTargetVersions.accountDigest };
     },
   },
@@ -82,11 +83,11 @@ export const DOMAINS: Record<string, Domain> = {
       const p = a.params as Record<string, any>;
       const subj = { accountId: String(p.accountId) };
       const prof = readObs(db, s, 'account_profile', 'crm', subj)!;
-      const oldEmail = String(prof.value.email ?? '');
+      const oldEmail = canonicalEmail(prof.value.email);
       const newEmail = canonicalEmail(p.newEmail);
       publish(db, s, { kind: 'account_profile', sourceId: 'crm', sourceClass: 'ADAPTER', subject: subj, value: { ...prof.value, email: newEmail, version: Number(prof.value.version) + 1 } }, now);
       publish(db, s, { kind: 'email_index', sourceId: 'crm', sourceClass: 'ADAPTER', subject: { email: newEmail }, value: { ownerAccountId: p.accountId } }, now);
-      if (oldEmail) publish(db, s, { kind: 'email_index', sourceId: 'crm', sourceClass: 'ADAPTER', subject: { email: oldEmail }, value: { ownerAccountId: null } }, now);
+      if (oldEmail && oldEmail !== newEmail) publish(db, s, { kind: 'email_index', sourceId: 'crm', sourceClass: 'ADAPTER', subject: { email: oldEmail }, value: { ownerAccountId: null } }, now);
       return { effect: 'EMAIL_CHANGED', accountId: p.accountId, from: oldEmail, to: newEmail };
     },
   },

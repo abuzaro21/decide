@@ -95,8 +95,9 @@ export function record(db: Db, s: Scope, row: PropRow, snap: Snapshot, d: Decisi
   // Timers: upsert started/changed, clear those whose gate is no longer an unresolved EXTERNAL failure.
   for (const [gateId, t] of Object.entries(d.timerUpdates))
     db.prepare('INSERT INTO gate_timers VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET deadline_at=excluded.deadline_at').run(...key, gateId, t.firstBlockedAt, t.deadlineAt, t.extended ? 1 : 0);
-  const open = new Set(d.obligations.filter((g) => g.deadlineAt !== undefined).map((g) => g.gateId));
-  for (const gateId of Object.keys(snap.timers)) if (!open.has(gateId))
+  // A timer is cleared only when its gate is RESOLVED (PASS/NA); a BLOCKED gate keeps its original deadline (G3-04).
+  const resolved = new Set(d.gates.filter((g) => g.status === 'PASS' || g.status === 'NOT_APPLICABLE').map((g) => g.gateId));
+  for (const gateId of Object.keys(snap.timers)) if (resolved.has(gateId))
     db.prepare('DELETE FROM gate_timers WHERE session_id=? AND run_id=? AND proposal_id=? AND revision=? AND gate_id=?').run(...key, gateId);
 
   // A new decision record whenever outcome, any gate, the evidence admitted/rejected, or the bound snapshot changes.
@@ -114,8 +115,7 @@ export function record(db: Db, s: Scope, row: PropRow, snap: Snapshot, d: Decisi
     });
   }
   // Approvals the engine just found invalid are marked so, with the reason, in this same transaction (audited).
-  const appr = d.gates.find((g) => g.status === 'FAIL' && g.purpose === 'APPROVE');
-  for (const x of ((appr?.observed as any)?.invalid ?? []) as { approvalId: string; reason: string }[]) {
+  for (const x of d.approvalChecks.filter((c) => c.reason)) {
     const r = db.prepare("UPDATE approvals SET status='INVALIDATED' WHERE approval_id=? AND session_id=? AND run_id=? AND status='ACTIVE'").run(x.approvalId, s.sessionId, s.runId);
     if (Number(r.changes) === 1) audit(db, s.sessionId, s.runId, now, { type: 'APPROVAL_INVALIDATED', proposalId: row.proposal_id, revision: row.revision, actor: 'engine', payload: x });
   }

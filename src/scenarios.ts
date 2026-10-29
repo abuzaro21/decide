@@ -77,7 +77,7 @@ function seedVendor(db: Db, s: Scope, now: number, id: string, bec: boolean) {
     { kind: 'remit_to', sourceId: 'erp', sourceClass: 'ADAPTER', subject: { ...inv, invoiceVersion: 1 }, value: { accountDigest: ACCT_A }, observedAt: now - HOUR },
     { kind: 'bank_details', sourceId: 'vendor_master', sourceClass: 'ADAPTER', subject: { vendorId: 'northwind' }, value: bank },
     { kind: 'callback_verification', sourceId: 'treasury', sourceClass: 'ADAPTER', subject: { vendorId: 'northwind', bankDetailsVersion: 3, accountDigest: ACCT_A }, value: { status: 'PASS' }, observedAt: now - 40 * 24 * HOUR },
-    { kind: 'vendor_exposure', sourceId: 'ledger', sourceClass: 'ADAPTER', subject: { vendorId: 'northwind', windowDays: 30 }, value: { settledCents: 0 } },
+    { kind: 'vendor_exposure', sourceId: 'ledger', sourceClass: 'ADAPTER', subject: { vendorId: 'northwind', windowDays: 30 }, value: { settlements: [] } },
   ]);
   const pr = proposerFor(bec ? 'vendor-bec' : '', { agentConfidence: 0.97, rationale: 'Routine invoice, matched to PO and receipt. Pay it.' },
     { vendorId: 'northwind', invoiceId: 'INV-10422', amountCents: 80_000, currency: 'USD', rail: 'ACH' });
@@ -105,6 +105,8 @@ export interface Scenario { id: string; title: string; domain: string; seed: (db
 export const SCENARIOS: Scenario[] = [
   { id: 'confidence-trap', title: 'The Confidence Trap — 99% sure, stale telemetry, no rollback drill', domain: 'deploy_release',
     seed: (db, s, now) => seedDeploy(db, s, now, 'confidence-trap', { service: 'checkout-api', traffic: 100, telemetryAgeMs: 47 * MIN, drill: null }) },
+  { id: 'deploy-ready', title: 'Fully evidenced production deploy awaiting the release owner', domain: 'deploy_release',
+    seed: (db, s, now) => seedDeploy(db, s, now, 'deploy-ready', { service: 'checkout-api', traffic: 100, telemetryAgeMs: MIN, drill: 'PASS' }) },
   { id: 'deploy-canary', title: 'Canary — 1% of a tier-2 service, fully evidenced', domain: 'deploy_release',
     seed: (db, s, now) => seedDeploy(db, s, now, 'deploy-canary', { service: 'search-api', traffic: 1, telemetryAgeMs: MIN, drill: 'PASS' }) },
   { id: 'vendor-bec', title: 'Changed bank details — invoice and vendor master disagree', domain: 'pay_vendor_invoice', seed: (db, s, now) => seedVendor(db, s, now, 'vendor-bec', true) },

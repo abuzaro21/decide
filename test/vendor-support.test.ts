@@ -39,7 +39,7 @@ function payBase(over: { amountCents?: number; rail?: string; currency?: string;
       o('remit_to', 'erp', { ...inv, invoiceVersion: 1 }, { accountDigest: A }, HOUR),
       o('bank_details', 'vendor_master', { vendorId: 'northwind' }, { bankDetailsVersion: bank.v, accountDigest: bank.acct, changedAt: bank.changedAt, changeChannel: 'EMAIL' }),
       o('callback_verification', 'treasury', { vendorId: 'northwind', bankDetailsVersion: 3, accountDigest: A }, { status: 'PASS' }, 40 * 24 * HOUR),
-      o('vendor_exposure', 'ledger', { vendorId: 'northwind', windowDays: 30 }, { settledCents: world.settled ?? 0 }),
+      o('vendor_exposure', 'ledger', { vendorId: 'northwind', windowDays: 30 }, { settlements: world.settled ? [{ at: T0 - 24 * HOUR, cents: world.settled }] : [] }),
     ],
   };
 }
@@ -104,7 +104,7 @@ test('PAY-11 approval invalidated when exposure grows within the same tier; PAY-
   const s = swap(payBase({ amountCents: 800_000 }), 'invoice_state', { openBalanceCents: 800_000 });
   const approved = approve(vendorPolicy, s, 'human:ana');
   assert.equal(run(vendorPolicy, approved).outcome, 'EXECUTE');
-  const grown = swap(approved, 'vendor_exposure', { settledCents: 1_200_000 });
+  const grown = swap(approved, 'vendor_exposure', { settlements: [{ at: T0 - HOUR, cents: 1_200_000 }] });
   const d11 = run(vendorPolicy, grown);
   assert.equal(d11.risk!.tier, 'HIGH');
   assert.equal(d11.outcome, 'ESCALATE');
@@ -180,4 +180,20 @@ test('agent confidence invariance holds in vendor and support domains', () => {
       for (const c of [0, 1, undefined]) { const d = run(pol, { ...s, agentConfidence: c }); assert.equal(d.outcome, ref.outcome); assert.deepEqual(d.gates, ref.gates); }
     }
   }
+});
+
+test('G4-01 a callback older than 90 days no longer verifies the payout target → DEFER', () => {
+  const s = payBase();
+  const old = { ...s, candidates: s.candidates.map((x) => (x.kind === 'callback_verification' ? { ...x, observedAt: T0 - 100 * 24 * HOUR } : x)) };
+  const d = run(vendorPolicy, old);
+  assert.equal(d.outcome, 'DEFER');
+  assert.deepEqual(fails(d), ['AVAIL(callback_verification)']);
+  assert.ok(d.rejected.some((r) => r.kind === 'callback_verification' && r.reason === 'EXPIRED'));
+});
+
+test('G4-02 exposure counts settlements in (now − 30 d, now] only', () => {
+  const s = payBase({ amountCents: 20_000 });
+  const at = (ageDays: number) => ({ ...s, candidates: s.candidates.map((x) => (x.kind === 'vendor_exposure' ? { ...x, value: { settlements: [{ at: T0 - ageDays * 24 * HOUR, cents: 80_000 }] } } : x)) });
+  assert.equal(run(vendorPolicy, at(29)).risk!.I, 2); // 80,000 + 20,000 = 100,000 ⇒ HIGH band
+  assert.equal(run(vendorPolicy, at(31)).risk!.I, 1); // old settlement outside the window
 });

@@ -259,6 +259,7 @@ function ReviewSeat({ v, g, busy, run }: { v: View; g: Gate; busy: boolean; run:
   const role = g.purpose === 'APPROVE' ? String(g.required) : String(g.role);
   const who = ROLE_HOLDER[role];
   const base = `/api/proposals/${v.proposalId}/revisions/${v.revision}`;
+  const episode = g.purpose === 'TIMEOUT' ? String(g.deadlineAt) : String(g.observed?.conflictDigest ?? '');
   return (
     <article className="card seat">
       <h3>Sit as {roleLabel(role)} <span className="sim">simulated identity · {who}</span></h3>
@@ -270,21 +271,21 @@ function ReviewSeat({ v, g, busy, run }: { v: View; g: Gate; busy: boolean; run:
           <dt>Policy</dt><dd><code>{d.policyName}</code></dd>
           <dt>Risk</dt><dd>{d.risk?.tier} ({d.display.riskScore?.components})</dd>
         </dl>
-        <div className="row"><button className="primary" disabled={busy} onClick={() => run(() => api('POST', `${base}/review`, { approverId: who, verdict: 'APPROVE' }))}>Approve this snapshot</button>
-          <button className="danger" disabled={busy} onClick={() => run(() => api('POST', `${base}/review`, { approverId: who, verdict: 'REJECT' }))}>Reject</button></div>
+        <div className="row"><button className="primary" disabled={busy} onClick={() => run(() => api('POST', `${base}/review`, { approverId: who, verdict: 'APPROVE', reviewToken: d.reviewToken }))}>Approve this snapshot</button>
+          <button className="danger" disabled={busy} onClick={() => run(() => api('POST', `${base}/review`, { approverId: who, verdict: 'REJECT', reviewToken: d.reviewToken }))}>Reject</button></div>
       </>)}
       {g.purpose === 'ADJUDICATE' && (<>
         <p className="hint">{ADJ_HINT[g.gateId] ?? 'Decide, or reject the proposal.'}</p>
         <div className="controls">
-          {g.gateId === 'D-TEL-CONFLICT' && (g.observed?.candidates ?? []).map((c: any) => <button key={c.observationId} disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'SELECT_OBSERVATION', selection: c.observationId }))}>Trust {c.source}: {c.errorRatePct}% errors, p95 {c.p95Ms} ms</button>)}
-          {g.gateId === 'P-REMIT-CONFLICT' && <button disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'PAY_BOUND_TARGET' }))}>Keep the vendor-master account as payee — it still needs a callback</button>}
-          {g.gateId === 'S-FRAUD' && <button disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'CLEAR_FOR_REVISION' }))}>Clear this flag for this request only</button>}
-          <button className="danger" disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'REJECT' }))}>Reject the proposal</button></div>
+          {g.gateId === 'D-TEL-CONFLICT' && (g.observed?.candidates ?? []).map((c: any) => <button key={c.observationId} disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, reviewed: episode, gateId: g.gateId, decision: 'SELECT_OBSERVATION', selection: c.observationId }))}>Trust {c.source}: {c.errorRatePct}% errors, p95 {c.p95Ms} ms</button>)}
+          {g.gateId === 'P-REMIT-CONFLICT' && <button disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, reviewed: episode, gateId: g.gateId, decision: 'PAY_BOUND_TARGET' }))}>Keep the vendor-master account as payee — it still needs a callback</button>}
+          {g.gateId === 'S-FRAUD' && <button disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, reviewed: episode, gateId: g.gateId, decision: 'CLEAR_FOR_REVISION' }))}>Clear this flag for this request only</button>}
+          <button className="danger" disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, reviewed: episode, gateId: g.gateId, decision: 'REJECT' }))}>Reject the proposal</button></div>
       </>)}
       {g.purpose === 'TIMEOUT' && (<>
         <p className="hint">The deadline passed. You may extend once or cancel. You cannot mark the evidence as present.</p>
-        <div className="row"><button disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'EXTEND_ONCE' }))}>Extend once</button>
-          <button className="danger" disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, gateId: g.gateId, decision: 'CANCEL' }))}>Cancel</button></div>
+        <div className="row"><button disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, reviewed: episode, gateId: g.gateId, decision: 'EXTEND_ONCE' }))}>Extend once</button>
+          <button className="danger" disabled={busy} onClick={() => run(() => api('POST', `${base}/adjudicate`, { actor: who, reviewed: episode, gateId: g.gateId, decision: 'CANCEL' }))}>Cancel</button></div>
       </>)}
     </article>
   );

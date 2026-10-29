@@ -22,11 +22,17 @@ async function harness() {
   const scenario = async (id: string) => (await call('POST', `/api/scenarios/${id}`)).body.proposalId as string;
   const world = (pid: string, control: string) => call('POST', `/api/proposals/${pid}/world`, { control });
   const view = async (pid: string) => (await call('GET', `/api/proposals/${pid}`)).body;
-  const reviewAs = (pid: string, rev: number, approverId: string, verdict: string) => call('POST', `/api/proposals/${pid}/revisions/${rev}/review`, { approverId, verdict });
-  const adjudicate = (pid: string, rev: number, actor: string, cmd: object) => call('POST', `/api/proposals/${pid}/revisions/${rev}/adjudicate`, { actor, ...cmd });
+  // Commands echo exactly what the human was shown (review token / conflict-or-timer episode), as the UI does.
+  const reviewAs = async (pid: string, rev: number, approverId: string, verdict: string, token?: string) =>
+    call('POST', `/api/proposals/${pid}/revisions/${rev}/review`, { approverId, verdict, reviewToken: token ?? (await view(pid)).decision.reviewToken });
+  const episodeOf = (g: any) => (g.purpose === 'TIMEOUT' ? String(g.deadlineAt) : String(g.observed?.conflictDigest ?? ''));
+  const adjudicate = async (pid: string, rev: number, actor: string, cmd: { gateId: string; reviewed?: string; [k: string]: unknown }) => {
+    const g = (await view(pid)).decision.obligations.find((x: any) => x.gateId === cmd.gateId);
+    return call('POST', `/api/proposals/${pid}/revisions/${rev}/adjudicate`, { actor, reviewed: cmd.reviewed ?? (g ? episodeOf(g) : 'none'), ...cmd });
+  };
   const execute = (pid: string, rev: number) => call('POST', `/api/proposals/${pid}/revisions/${rev}/execute`);
   const events = async () => (await call('GET', '/api/audit')).body;
-  return { call, scenario, world, view, reviewAs, adjudicate, execute, events, tick: (ms: number) => { now += ms; },
+  return { call, scenario, world, view, reviewAs, adjudicate, episodeOf, execute, events, tick: (ms: number) => { now += ms; },
     stop: () => new Promise<void>((r) => app.server.close(() => { app.close(); rmSync(dir, { recursive: true, force: true }); r(); })) };
 }
 
@@ -210,5 +216,75 @@ test('recordings endpoint exposes genuine model outputs with model id; live agen
     assert.ok(recs.every((r: any) => r.model === 'claude-haiku-5-5' && r.rawOutput && r.recordedAt));
     const live = await h.call('POST', '/api/agent', { request: 'deploy something' });
     if (!process.env.ANTHROPIC_API_KEY) assert.equal(live.status, 503);
+  } finally { await h.stop(); }
+});
+
+// ---- Codex G3/G4 regressions (decision-engine-planning/codex-sessions/gates/codex-g2r-g3-g4-final.md) ----
+test('G3-01 a review command for a snapshot that changed since it was shown is refused (409 STALE_REVIEW)', async () => {
+  const h = await harness();
+  try {
+    const pid = await h.scenario('confidence-trap');
+    await h.world(pid, 'telemetry-healthy'); await h.world(pid, 'drill-pass');
+    const shown = (await h.view(pid)).decision.reviewToken;
+    await h.world(pid, 'telemetry-healthy'); // a new observation arrives after the reviewer looked
+    const r = await h.reviewAs(pid, 1, 'human:rhea', 'APPROVE', shown);
+    assert.equal(r.status, 409);
+    assert.equal(r.body.status, 'STALE_REVIEW');
+    assert.equal((await h.reviewAs(pid, 1, 'human:rhea', 'APPROVE')).body.decision.outcome, 'EXECUTE');
+  } finally { await h.stop(); }
+});
+
+test('G3-02 replaying an adjudication command after the flag changed is refused (409 STALE_COMMAND)', async () => {
+  const h = await harness();
+  try {
+    const pid = await h.scenario('support-org-admin');
+    await h.world(pid, 'fraud-flag');
+    const g1 = (await h.view(pid)).decision.obligations.find((x: any) => x.gateId === 'S-FRAUD');
+    const seen = h.episodeOf(g1);
+    assert.equal((await h.adjudicate(pid, 1, 'human:sec', { gateId: 'S-FRAUD', decision: 'CLEAR_FOR_REVISION', reviewed: seen })).status, 200);
+    await h.world(pid, 'fraud-flag'); // flag version 2
+    const replayed = await h.adjudicate(pid, 1, 'human:sec', { gateId: 'S-FRAUD', decision: 'CLEAR_FOR_REVISION', reviewed: seen });
+    assert.equal(replayed.status, 409);
+    assert.equal(replayed.body.status, 'STALE_COMMAND');
+    assert.ok((await h.view(pid)).decision.obligations.some((x: any) => x.gateId === 'S-FRAUD'));
+  } finally { await h.stop(); }
+});
+
+test('G4-02 exposure is a rolling 30-day window: a settlement 31 days old no longer counts', async () => {
+  const h = await harness();
+  try {
+    const pid = await h.scenario('vendor-clean');
+    assert.equal((await h.execute(pid, 1)).body.status, 'SUCCEEDED'); // $800 settled at t0
+    h.tick(31 * 24 * 3600_000);
+    // a new $200 invoice for the same vendor (simulated ERP publishes it)
+    const r = await h.call('POST', '/api/proposals', { actionType: 'pay_vendor_invoice', params: { vendorId: 'northwind', invoiceId: 'INV-10422', amountCents: 20000, currency: 'USD', rail: 'ACH' } });
+    const d = (await h.view(r.body.proposalId)).decision;
+    assert.equal(d.risk.I, 1, 'only the $200 counts after 31 days');
+  } finally { await h.stop(); }
+});
+
+test('G4-03 changing an email to its current address keeps ownership', async () => {
+  const h = await harness();
+  try {
+    const pid = await h.scenario('support-injection');
+    await h.world(pid, 'idv-pass');
+    await h.execute(pid, 1);
+    const p2 = await h.call('POST', '/api/proposals', { actionType: 'change_account_email', params: { accountId: 'acct-55120', ticketId: 'T-58213', newEmail: 'new@example.com' } });
+    await h.world(p2.body.proposalId, 'idv-pass');
+    const ex = await h.execute(p2.body.proposalId, 1);
+    assert.equal(ex.body.status, 'SUCCEEDED');
+    const p3 = await h.call('POST', '/api/proposals', { actionType: 'change_account_email', params: { accountId: 'acct-999', ticketId: 'T-1', newEmail: 'new@example.com' } });
+    assert.equal(p3.status, 409, 'acct-999 does not exist');
+    const v = await h.view(p2.body.proposalId);
+    assert.equal(v.status, 'CLOSED_EXECUTED');
+  } finally { await h.stop(); }
+});
+
+test('client-submitted proposals cannot claim model provenance', async () => {
+  const h = await harness();
+  try {
+    await h.scenario('deploy-canary');
+    const r = await h.call('POST', '/api/proposals', { actionType: 'deploy_release', params: { service: 'search-api', environment: 'prod' }, proposer: { kind: 'RECORDED_LLM', model: 'gpt-imaginary' } });
+    assert.equal(r.status, 400);
   } finally { await h.stop(); }
 });

@@ -30,7 +30,7 @@ export interface Gate {
 export interface Decision {
   outcome: 'EXECUTE' | 'ASK' | 'DEFER' | 'ESCALATE' | 'REFUSE'; fingerprint: string; policyName: string; policyHash: string; evaluatorVersion: string;
   gates: Gate[]; obligations: Gate[]; later: Gate[]; rejected: { observationId: string; kind: string; sourceId: string; reason: string }[];
-  snapshotRoot: string; preconditions: Record<string, string>; risk: { I: number; B: number; U: number; uUnknown: boolean; tier: string } | null;
+  snapshotRoot: string; preconditions: Record<string, string>; reviewToken: string; risk: { I: number; B: number; U: number; uUnknown: boolean; tier: string } | null;
   display: {
     agentConfidence: { value: number | null; label: string }; evidenceCoverage: { available: number; required: number };
     provenance: { adapter: number; reviewer: number; requester: number; rejected: number };

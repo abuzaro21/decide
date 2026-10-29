@@ -16,7 +16,7 @@ import { loadRecordings, proposeLive, PROPOSER_MODEL } from './proposer.ts';
 import { PARAMS } from './contracts.ts';
 const Str = z.string().min(1).max(200);
 const ProposerIn = z.strictObject({
-  kind: z.enum(['LIVE_LLM', 'RECORDED_LLM', 'MANUAL']).default('MANUAL'), model: Str.optional(), recordedAt: Str.optional(), recordingId: Str.optional(),
+  kind: z.literal('MANUAL').default('MANUAL'),
   agentConfidence: z.number().min(0).max(1).optional(), rationale: z.string().max(4000).optional(), prompt: z.string().max(4000).optional(),
 });
 const ProposeIn = z.strictObject({ actionType: Str, params: z.record(z.string(), z.unknown()), proposer: ProposerIn.default({ kind: 'MANUAL' }) });
@@ -24,8 +24,8 @@ const ReviseIn = z.strictObject({ params: z.record(z.string(), z.unknown()), pro
 const ControlIn = z.strictObject({ control: Str });
 const EvidenceIn = z.strictObject({ kind: Str, sourceId: Str, subject: z.record(z.string(), z.union([z.string(), z.number()])), value: z.record(z.string(), z.unknown()) });
 const ClockIn = z.strictObject({ advanceMinutes: z.number().int().min(1).max(24 * 60) });
-const ReviewIn = z.strictObject({ approverId: Str, verdict: z.enum(['APPROVE', 'REJECT']) });
-const AdjudicateIn = z.strictObject({ actor: Str, gateId: Str, decision: Str, selection: Str.optional() });
+const ReviewIn = z.strictObject({ approverId: Str, verdict: z.enum(['APPROVE', 'REJECT']), reviewToken: Str });
+const AdjudicateIn = z.strictObject({ actor: Str, gateId: Str, decision: Str, selection: Str.optional(), reviewed: Str });
 
 const parse = <T>(schema: z.ZodType<T>, v: unknown): T => {
   const r = schema.safeParse(v);
@@ -121,11 +121,11 @@ export function createApp(opts: AppOptions) {
     ['POST', /^\/api\/proposals\/([\w-]+)\/revisions\/(\d+)\/execute$/, (req, m) => { const s = sessionOf(req); return execute(db, s, m[1], Number(m[2]), AGENT, () => clockFor(s)); }],
     ['POST', /^\/api\/proposals\/([\w-]+)\/revisions\/(\d+)\/review$/, async (req, m) => {
       const s = sessionOf(req); const b = parse(ReviewIn, await body(req));
-      return review(db, s, m[1], Number(m[2]), b.approverId, b.verdict, () => clockFor(s));
+      return review(db, s, m[1], Number(m[2]), b.approverId, b.verdict, b.reviewToken, () => clockFor(s));
     }],
     ['POST', /^\/api\/proposals\/([\w-]+)\/revisions\/(\d+)\/adjudicate$/, async (req, m) => {
       const s = sessionOf(req); const b = parse(AdjudicateIn, await body(req));
-      return adjudicate(db, s, m[1], Number(m[2]), b.actor, { gateId: b.gateId, decision: b.decision, selection: b.selection }, () => clockFor(s));
+      return adjudicate(db, s, m[1], Number(m[2]), b.actor, { gateId: b.gateId, decision: b.decision, selection: b.selection, reviewed: b.reviewed }, () => clockFor(s));
     }],
     // Ground truth the engine never sees (K-1 known failure) — shown so the failure is honest, not hidden.
     ['GET', /^\/api\/ground-truth$/, (req) => {

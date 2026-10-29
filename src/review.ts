@@ -23,11 +23,13 @@ const holds = (db: Db, s: Scope, principal: string, role: string) =>
   !!db.prepare('SELECT 1 FROM roles WHERE session_id=? AND run_id=? AND principal=? AND role=?').get(s.sessionId, s.runId, principal, role);
 
 /** Approve or reject the exact snapshot the reviewer sees. Allowed only while the APPROVE gate is FAIL (which implies every other gate passes). */
-export function review(db: Db, s: Scope, proposalId: string, revision: number, approverId: string, verdict: 'APPROVE' | 'REJECT', clock: Clock) {
+export function review(db: Db, s: Scope, proposalId: string, revision: number, approverId: string, verdict: 'APPROVE' | 'REJECT', reviewToken: string, clock: Clock) {
   let now = 0;
   tx(db, () => {
     now = readClock(clock);
     const { row, snap, dom, d } = current(db, s, proposalId, revision, now);
+    // The reviewer consents to what they were shown, not to whatever the state is now (G3-01).
+    if (reviewToken !== d.reviewToken) throw new HttpError(409, { error: 'the snapshot changed since it was shown to the reviewer; review the current one', status: 'STALE_REVIEW' });
     const gate = d.obligations.find((g) => g.purpose === 'APPROVE');
     if (!gate || d.obligations.length !== 1) throw new HttpError(409, { error: 'approval is not requestable now', outcome: d.outcome, obligations: d.obligations.map((g) => g.gateId) });
     const role = String(gate.required);
@@ -47,7 +49,7 @@ export function review(db: Db, s: Scope, proposalId: string, revision: number, a
 }
 
 /** Typed adjudication / timeout command (06 §7.1): only the decisions the open gate allows, only by its role, only against the current conflict set. */
-export function adjudicate(db: Db, s: Scope, proposalId: string, revision: number, actor: string, cmd: { gateId: string; decision: string; selection?: string }, clock: Clock) {
+export function adjudicate(db: Db, s: Scope, proposalId: string, revision: number, actor: string, cmd: { gateId: string; decision: string; selection?: string; reviewed: string }, clock: Clock) {
   let now = 0;
   tx(db, () => {
     now = readClock(clock);
@@ -58,6 +60,9 @@ export function adjudicate(db: Db, s: Scope, proposalId: string, revision: numbe
     if (!holds(db, s, actor, role)) throw new HttpError(403, { error: `actor does not hold required role ${role}` });
     if (actor === snap.action.initiatingPrincipal) throw new HttpError(403, { error: 'the requester cannot adjudicate its own action' });
     let conflictDigest = '';
+    // The command must name the exact conflict/flag/timer episode its author reviewed (G3-02).
+    const episode = gate.purpose === 'TIMEOUT' ? String(gate.deadlineAt) : String((gate.observed as any)?.conflictDigest ?? '');
+    if (cmd.reviewed !== episode) throw new HttpError(409, { error: 'the situation changed since it was shown; review the current one', status: 'STALE_COMMAND' });
     if (gate.purpose === 'TIMEOUT') {
       if (!TIMEOUT_DECISIONS.includes(cmd.decision)) throw new HttpError(400, { error: 'timeout allows only CANCEL or EXTEND_ONCE' });
       const t = snap.timers[cmd.gateId];
