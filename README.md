@@ -58,9 +58,10 @@ npm start          # http://localhost:3000
 Checks:
 
 ```bash
-npm test           # 78 tests: evaluator, policies, store, fault injection, concurrency, HTTP, flows
+npm test           # 88 tests: evaluator, policies, store, fault injection, concurrency, HTTP, flows
 npm run typecheck  # server, tests and UI
-npm run test:e2e   # Playwright judge journey against the real server (run `npx playwright install chromium` once)
+npm run test:e2e   # 7 Playwright tests: judge journey against the real server (run `npx playwright install chromium` once)
+                   # E2E_BASE_URL=https://… npm run test:e2e  runs the same journey as a smoke test against a deployed URL
 npm run spike:sqlite
 ```
 
@@ -145,6 +146,12 @@ Docker: `docker build -t decide . && docker run -p 3000:3000 decide`.
 - **K-8** Strict-snapshot approvals expire when any bound observation is replaced or expires (at most 5 minutes for telemetry). That is correct consent semantics, at the cost of frequent re-approval.
 - **K-9** Incident hotfixes are out of contract. "INCIDENT_REMEDIATION" is refused, never fast-tracked.
 - **K-10** The public demo keeps state for one run. A restart or spin-down starts a new run, and old sessions get an explicit 410.
+
+## More
+
+- [THESIS.md](THESIS.md): two-year thesis (≤300 words).
+- [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md): 90-second walkthrough script.
+- [evidence/LOG.md](evidence/LOG.md): what was actually run, with results, including the independent review verdicts.
 
 ## Out of scope
 

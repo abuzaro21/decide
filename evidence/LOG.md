@@ -59,3 +59,21 @@ Carried forward to G2/G3 (non-blocking):
 - `docker build -t decide:local .`: 337 MB image (node:24.13.0-slim). Runs as the unprivileged `node` user.
 - Cold start to a healthy `/api/health` response: **1667 ms**. A Render free instance adds its own wake-up of about 1 minute.
 - `docker restart` gives a new `runId`. The old session cookie then gets `410 "this demo run was restarted…"`, so nothing implies persistence across restarts.
+
+## 2026-10-30 — Gates G2–G4 (Codex `gpt-6.1-sol`, same session, read-only, pinned commits)
+
+Transcripts are in `decision-engine-planning/codex-sessions/gates/`.
+
+| Gate | Round 1 | Fixes | Final |
+|---|---|---|---|
+| G2 transactional execution | FAIL at `74a2422`: G2-01…07 (stale clock under lock contention, COMMIT ambiguity, rollback-drill bypass via claimed fromArtifact, unaudited reseed, replay not bound to audit, server crash on `/%`, receipt ownership) | `4f93e54` | **G2 PASS** (re-confirmed against Codex's original probes) |
+| G3 approvals/adjudication/audit | FAIL at `4f93e54`: G3-01…04 (stale consent, stale adjudication command, approval resurrection, timer reset while BLOCKED) | `fa031b5` | FAIL (R-01: exposure binding hashed raw history), fixed `5660417`, **G3 PASS** |
+| G4 vendor + support domains | FAIL at `4f93e54`: G4-01…03 (90-day callback cap, rolling exposure, same-address ownership) | `fa031b5` | FAIL (R-01), fixed `5660417`, **G4 PASS** |
+
+Every blocking finding has a regression test.
+
+## 2026-10-30 — Clean-clone qualification (fresh `node:24.13.0-slim` container, `git clone` of `5660417`)
+
+- `npm ci`, then `npm run build`, then `npm test`: **88/88**. `npm run typecheck`: OK.
+- `npm start` was healthy after 2.3 s and served the UI. The Confidence Trap scenario returned **DEFER**.
+- GitHub Actions on `5660417`: ubuntu + windows verify green; Linux Playwright **7/7**.
