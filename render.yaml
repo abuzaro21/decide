@@ -1,0 +1,19 @@
+# Render Blueprint for DECIDE — NOT APPLIED. Requires owner approval before any service is created.
+# Free plan only: an omitted plan defaults to a paid plan, so every resource states `plan: free`.
+services:
+  - type: web
+    name: decide-demo
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: "off"
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: "3000"
+      # Optional live proposer. Leave unset for the keyless demo (genuine recorded outputs are used).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+# No disk, no database, no key-value store: demo state lives for one run and resets on restart/spin-down (K-10).

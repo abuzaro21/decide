@@ -105,7 +105,7 @@ export function App() {
                 <div className="verdict-next">{v.status === 'CLOSED_EXECUTED' ? 'Executed exactly once. The receipt below is the permanent record.' : OUTCOME_COPY[d.outcome].next}</div>
               </div>
               {v.status !== 'CLOSED_EXECUTED' && d.obligations.length > 0 && (
-                <ul className="why">{d.obligations.map((g) => <li key={g.gateId}><span className="actor">{actorOf(g)}</span><span>{sentence(g, v)}{g.deadlineAt ? <em className="deadline"> Waits until {new Date(g.deadlineAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, then escalates to an operator.</em> : null}</span></li>)}</ul>
+                <ul className="why">{byPrecedence(d.obligations).map((g) => <li key={g.gateId}><span className="actor">{actorOf(g)}</span><span>{sentence(g, v)}{g.deadlineAt ? <em className="deadline"> Waits until {when(g.deadlineAt)}, then escalates to an operator.</em> : null}</span></li>)}</ul>
               )}
               <Invalidated d={d} />
               {d.later.length > 0 && v.status === 'OPEN' && (
@@ -143,7 +143,7 @@ export function App() {
             <article className="card signals">
               <h3>What this decision rests on</h3>
               <Signal label="Evidence" value={`${d.display.evidenceCoverage.available}/${d.display.evidenceCoverage.required} required sources`} note={`${SUPPORT_COPY[d.display.evidenceSupport] ?? d.display.evidenceSupport}. Deterministic count, not a probability.`} />
-              <Signal label="Provenance" value={`${d.display.provenance.adapter} from systems · ${d.display.provenance.requester} requester-asserted`} note={d.display.provenance.rejected ? `${d.display.provenance.rejected} observation(s) rejected at admission: ${[...new Set(d.rejected.map((r) => r.reason.toLowerCase().replace(/_/g, ' ')))].join(', ')}` : 'Nothing rejected'} />
+              <Signal label="Provenance" value={`${d.display.provenance.adapter} from systems · ${d.display.provenance.requester} requester-asserted`} note={admissionNote(d)} />
               <Signal label="Risk score" value={d.display.riskScore ? `${d.display.riskScore.ordinal}/4 · ${d.display.riskScore.tier}` : '—'} note={d.display.riskScore ? `${d.display.riskScore.components} — consequence·breadth·recovery through a published matrix. Ordinal heuristic.` : 'Not computed until the proposal is complete'} />
               <Signal label="Reversibility" value={d.risk ? (d.risk.uUnknown ? 'Unknown — treated as irreversible' : ['No effect', 'Restorable (verified)', 'Compensable', 'Irreversible'][d.risk.U]) : '—'} />
               <Signal label="Cost of being wrong" value={costOfBeingWrong(v)} />
@@ -170,6 +170,23 @@ export function App() {
       <footer className="foot">Deterministic decisions · SQLite transactional simulator · every value on this page comes from the engine's decision record. Demo identities are simulated.</footer>
     </div>
   );
+}
+
+// The gate that decides the outcome first: REFUSE > ESCALATE > ASK > DEFER (same order as the engine).
+const RANK: Record<string, number> = { NONE: 0, AUTHORITY: 1, REQUESTER: 2, EXTERNAL: 3 };
+const byPrecedence = (gs: Gate[]) => [...gs].sort((a, b) => (RANK[a.resolver ?? 'EXTERNAL'] ?? 9) - (RANK[b.resolver ?? 'EXTERNAL'] ?? 9));
+const when = (t: number) => {
+  const d = new Date(t);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+};
+
+function admissionNote(d: NonNullable<View['decision']>) {
+  const other = d.rejected.filter((r) => r.reason === 'SUBJECT_MISMATCH').length;
+  const bad = d.rejected.filter((r) => r.reason !== 'SUBJECT_MISMATCH');
+  const reasons = [...new Set(bad.map((r) => r.reason.toLowerCase().replace(/_/g, ' ')))];
+  return [bad.length ? `${bad.length} rejected at admission (${reasons.join(', ')})` : 'Nothing rejected',
+    other ? `${other} about a different subject — e.g. another account, version or release pair — so it does not count for this exact action` : ''].filter(Boolean).join(' · ');
 }
 
 function laterSummary(later: Gate[]) {

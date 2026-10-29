@@ -105,7 +105,7 @@ export interface Scenario { id: string; title: string; domain: string; seed: (db
 export const SCENARIOS: Scenario[] = [
   { id: 'confidence-trap', title: 'The Confidence Trap — 99% sure, stale telemetry, no rollback drill', domain: 'deploy_release',
     seed: (db, s, now) => seedDeploy(db, s, now, 'confidence-trap', { service: 'checkout-api', traffic: 100, telemetryAgeMs: 47 * MIN, drill: null }) },
-  { id: 'deploy-ready', title: 'Fully evidenced production deploy awaiting the release owner', domain: 'deploy_release',
+  { id: 'deploy-ready', title: 'Ready for review — fully evidenced production deploy awaiting the release owner', domain: 'deploy_release',
     seed: (db, s, now) => seedDeploy(db, s, now, 'deploy-ready', { service: 'checkout-api', traffic: 100, telemetryAgeMs: MIN, drill: 'PASS' }) },
   { id: 'deploy-canary', title: 'Canary — 1% of a tier-2 service, fully evidenced', domain: 'deploy_release',
     seed: (db, s, now) => seedDeploy(db, s, now, 'deploy-canary', { service: 'search-api', traffic: 1, telemetryAgeMs: MIN, drill: 'PASS' }) },
