@@ -6,7 +6,10 @@ export class ApiError extends Error {
 }
 
 let sessionPromise: Promise<void> | null = null;
-export const newSession = () => (sessionPromise = fetch('/api/session', { method: 'POST' }).then(() => undefined));
+// Sessions are created one after another: two concurrent POSTs let the older response's Set-Cookie land last,
+// so later requests would carry a session that does not own the proposal the caller just created.
+export const newSession = () => (sessionPromise = (sessionPromise ?? Promise.resolve()).catch(() => {})
+  .then(() => fetch('/api/session', { method: 'POST' })).then(() => undefined));
 
 export async function api<T = any>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
   if (!sessionPromise) newSession();

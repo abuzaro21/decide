@@ -65,7 +65,7 @@ Checks:
 ```bash
 npm test           # 95 tests: evaluator, policies, store, fault injection, concurrency, HTTP, flows
 npm run typecheck  # server, tests and UI
-npm run test:e2e   # 9 Playwright tests: judge journey against the real server (run `npx playwright install chromium` once)
+npm run test:e2e   # 10 Playwright tests: judge journey against the real server (run `npx playwright install chromium` once)
                    # E2E_BASE_URL=https://… npm run test:e2e  runs the same journey as a smoke test against a deployed URL
 npm run spike:sqlite
 ```

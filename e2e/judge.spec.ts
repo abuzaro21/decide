@@ -113,3 +113,25 @@ test('@mobile renders without horizontal scroll and shows the verdict', async ({
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test('first load: a late session response cannot split the page across two sessions', async ({ page }) => {
+  // Reproduces the live-network race: boot requests and the scenario load each start a session; if the older
+  // session's Set-Cookie lands after the scenario was created, later requests read a session that does not own it.
+  let release!: () => void;
+  const scenarioCreated = new Promise<void>((r) => { release = r; });
+  let posts = 0;
+  await page.route('**/api/session', async (route) => {
+    const hold = route.request().method() === 'POST' && posts++ === 0;
+    const response = await route.fetch();
+    if (hold) await Promise.race([scenarioCreated, new Promise((r) => setTimeout(r, 3000))]);
+    await route.fulfill({ response });
+  });
+  await page.route('**/api/scenarios/*', async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response });
+    if (route.request().method() === 'POST') release();
+  });
+  await page.goto('/');
+  await expectTruthful(page, 'DEFER');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
