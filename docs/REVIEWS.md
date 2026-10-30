@@ -56,6 +56,13 @@ This page is a curated summary. The final PASS / APPROVED verdict lines are verb
 - The known-failure panel contradicted the current evidence.
 - Seven gaps in threat-catalogue test coverage were closed.
 
+**Live qualification (after release, against the public URL)**
+- **L-00 (found by Claude's live tests):** on v1.0.0, 10 of 20 fresh page loads showed "proposal not found in this session". Two session POSTs ran concurrently, and the older Set-Cookie could land last. Fixed in v1.0.1, where sessions are created sequentially. Regression test added.
+- **L-01 (Codex):** on v1.0.1, a late 401/410 from a superseded request could still start another session after a scenario switch. Fixed in v1.0.2: a session resets at most once per generation. Regression test added; Codex verdict: L-01 CLOSED.
+- **Final live verdict on v1.0.2: LIVE PASS.**
+  - Codex independently verified the deployed SHA, the tags, the empty `src/` diff, the unchanged evaluator and policy hashes, the free plan with auto-deploy off and no disk, `liveProposer:false`, the old-cookie 410, and a credential-pattern scan of the served assets.
+  - The live mutating journeys and the restart are author-reported.
+
 ## What was independently confirmed
 
 Codex confirmed the following itself:

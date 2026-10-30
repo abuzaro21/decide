@@ -7,6 +7,8 @@
 
 > An AI agent is allowed to do something. **Should this exact action happen now?** If not, **who has to act first?**
 
+**Live demo:** https://decide-demo.onrender.com. It runs `v1.0.2` on Render's free tier, so the first load after 15 idle minutes can take up to a minute. `v1.0.0` (`7e77900`) is the build shown in the film. `v1.0.1` and `v1.0.2` fix UI session handling only; the engine, API and policies are unchanged (`git diff v1.0.0 v1.0.2 -- src` is empty).
+
 DECIDE is a deterministic decision layer that sits between AI agents and the actions they propose. For every proposal it returns exactly one of:
 
 | Outcome | Means | Who acts next |
@@ -153,6 +155,7 @@ Windows PowerShell 5.1 has no `&&` and no `VAR=value cmd` syntax. Run the comman
 - **K-8** Strict-snapshot approvals expire when any bound observation is replaced or expires (at most 5 minutes for telemetry). That is correct consent semantics, at the cost of frequent re-approval.
 - **K-9** Incident hotfixes are out of contract. "INCIDENT_REMEDIATION" is refused, never fast-tracked.
 - **K-10** The public demo keeps state for one run. A restart or spin-down starts a new run, and old sessions get an explicit 410.
+- **K-11** Evaluator and policy version ids hash the source bytes. A Windows checkout with `core.autocrlf=true` reports different ids than the repository's LF files; the Linux/deployed values (`/api/health`) are canonical.
 
 ## More
 
