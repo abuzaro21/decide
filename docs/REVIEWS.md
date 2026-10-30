@@ -8,7 +8,7 @@ DECIDE was built by **Claude Opus 5.5**, the lead engineering agent. **OpenAI Co
 
 Codex read the code, ran the tests itself, and wrote its own attack probes. Every blocking finding was fixed with a regression test that reproduces the original probe. Codex then re-confirmed the fix against that probe.
 
-This page is a curated summary. The verdict lines are quoted exactly; the findings are paraphrased. Raw transcripts are kept privately because they contain local environment details.
+This page is a curated summary. The final PASS / APPROVED verdict lines are verbatim. The FAIL / BLOCKED lines are abridged (`…`), and the findings are paraphrased. Raw transcripts are kept privately because they contain local environment details.
 
 | Gate | Scope | Commit reviewed | Verdict(s) |
 |---|---|---|---|
@@ -59,7 +59,7 @@ This page is a curated summary. The verdict lines are quoted exactly; the findin
 ## What was independently confirmed
 
 Codex confirmed the following itself:
-- **Execution:** 20 separate SQLite connections executing one operation produce exactly one effect. Crashes at four points inside the transaction leave all-or-nothing.
+- **Execution:** 20 separate SQLite connections executing one operation produce exactly one effect. Process crashes at three pre-commit points and one post-commit point leave all-or-nothing.
 - **Approvals:**
   - they are invalidated by any change of action, evidence snapshot, exact exposure, policy, evaluator, role or expiry;
   - stale review and adjudication commands are refused;

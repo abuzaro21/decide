@@ -69,7 +69,7 @@ export const ACCT_B = 'acct:b44-unverified-new';
 function seedVendor(db: Db, s: Scope, now: number, id: string, bec: boolean) {
   ensureSession(db, s, now, DEMO_ROLES);
   const inv = { invoiceId: 'INV-10422' };
-  const bank = bec ? { bankDetailsVersion: 4, accountDigest: ACCT_B, changedAt: now - 20 * HOUR, changeChannel: 'email from accounts@northwind-freight.co (new domain)' }
+  const bank = bec ? { bankDetailsVersion: 4, accountDigest: ACCT_B, changedAt: now - 20 * HOUR, changeChannel: 'email from accounts@northwind-freight.example (new domain)' }
     : { bankDetailsVersion: 3, accountDigest: ACCT_A, changedAt: now - 400 * 24 * HOUR, changeChannel: 'vendor portal' };
   seedWorld(db, s, now, id, [
     { kind: 'invoice_state', sourceId: 'erp', sourceClass: 'ADAPTER', subject: inv, value: { version: 1, status: 'OPEN', openBalanceCents: 80_000, currency: 'USD' } },

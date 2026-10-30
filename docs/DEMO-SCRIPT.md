@@ -1,6 +1,6 @@
 # 90-second walkthrough — script (one full decision, end to end)
 
-Every on-screen value comes from the running engine; nothing in the recording is mocked.
+The recording captures the running simulator: the systems, identities and effects are simulated (and labelled so), and every displayed decision is produced by the evaluator.
 
 | t (s) | Screen / action | Voice-over |
 |---|---|---|

@@ -132,7 +132,7 @@ Windows PowerShell 5.1 has no `&&` and no `VAR=value cmd` syntax. Run the comman
 
 - **In the product.** Claude Haiku 5.5 (`claude-haiku-5-5`) is the proposer, and it is untrusted.
   - Keyless mode (default): `fixtures/proposals/*.json` are **genuine recorded outputs**. They were produced with `scripts/record-proposals.mjs` through the Claude Code CLI, and the model id comes from its runtime metadata. Each one is labelled with model and recording time in the UI.
-  - Live mode: set `ANTHROPIC_API_KEY` and `POST /api/agent` calls the Messages API.
+  - Live mode: set `ANTHROPIC_API_KEY` and `POST /api/agent` calls the Messages API. The public demo stays **keyless**, because live mode has no per-visitor spending controls.
   - The Confidence Trap uses a clearly labelled **scripted** 99%-confident agent. The genuine model, given the same request, was only 50% confident and produced the identical typed action, so the decision is identical. That is the point.
 - **In development.** Built by Claude Opus 5.5 (lead engineer), with OpenAI Codex GPT-6.1 Sol as an independent reviewer at every acceptance gate. Codex's findings and verdicts are recorded in the planning workspace, and every blocking finding has a regression test.
 
