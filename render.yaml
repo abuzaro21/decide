@@ -13,7 +13,6 @@ services:
     envVars:
       - key: PORT
         value: "3000"
-      # Optional live proposer. Leave unset for the keyless demo (genuine recorded outputs are used).
-      - key: ANTHROPIC_API_KEY
-        sync: false
+# Keyless by design: the demo uses genuine recorded proposer outputs. Live mode (ANTHROPIC_API_KEY) stays supported in
+# code but is deliberately not declared here, so Blueprint creation asks for no secrets.
 # No disk, no database, no key-value store: demo state lives for one run and resets on restart/spin-down (K-10).

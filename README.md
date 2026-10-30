@@ -142,7 +142,7 @@ Windows PowerShell 5.1 has no `&&` and no `VAR=value cmd` syntax. Run the comman
 - **K-2** Thresholds and TTLs are illustrative policy. Wrong thresholds give wrong outcomes, consistently.
 - **K-3** A rubber-stamping reviewer. Binding proves *what* was approved, not that it was understood.
 - **K-4** Atomicity holds for the SQLite-resident simulated effects only. Real external effects would need intent records, provider idempotency and reconciliation.
-- **K-5** The audit chain is tamper-evident relative to an **exported head**. Someone with database write access can rewrite unanchored history; replay detects edits to stored decisions.
+- **K-5** The audit chain is **tamper-evident within a run, relative to an exported head**. It is not tamper-proof: someone with database write access can rewrite unanchored history. Replay detects edits to stored decisions that disagree with the chain.
 - **K-6** Split payments are caught by 30-day per-vendor exposure only. There is no global spend limit. Deploy and support have no aggregate gate.
 - **K-7** Reviewer identities in the demo are simulated seats, not authenticated people.
 - **K-8** Strict-snapshot approvals expire when any bound observation is replaced or expires (at most 5 minutes for telemetry). That is correct consent semantics, at the cost of frequent re-approval.
@@ -154,6 +154,7 @@ Windows PowerShell 5.1 has no `&&` and no `VAR=value cmd` syntax. Run the comman
 - [THESIS.md](THESIS.md): two-year thesis (≤300 words).
 - [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md): 90-second walkthrough script.
 - [evidence/LOG.md](evidence/LOG.md): what was actually run, with results, including the independent review verdicts.
+- [docs/REVIEWS.md](docs/REVIEWS.md): the independent review record (Codex GPT-6.1 Sol), gate by gate.
 
 ## Out of scope
 

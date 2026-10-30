@@ -72,7 +72,7 @@ export function createApp(opts: AppOptions) {
 
   type Route = [string, RegExp, (req: IncomingMessage, m: RegExpMatchArray, res: ServerResponse) => Promise<unknown> | unknown];
   const routes: Route[] = [
-    ['GET', /^\/api\/health$/, () => ({ ok: true, runId, startedAt, evaluatorVersion: EVALUATOR_VERSION, liveProposer: !!process.env.ANTHROPIC_API_KEY, policies: Object.fromEntries(Object.entries(DOMAINS).map(([k, d]) => [k, d.policyHash])), persistence: 'SQLite file for the lifetime of this run; a restart starts a new run' })],
+    ['GET', /^\/api\/health$/, () => ({ ok: true, buildSha: process.env.RENDER_GIT_COMMIT ?? process.env.DEMO_BUILD_SHA ?? 'unknown', runId, startedAt, evaluatorVersion: EVALUATOR_VERSION, liveProposer: !!process.env.ANTHROPIC_API_KEY, policies: Object.fromEntries(Object.entries(DOMAINS).map(([k, d]) => [k, d.policyHash])), persistence: 'SQLite file for the lifetime of this run; a restart starts a new run' })],
     ['POST', /^\/api\/session$/, (_req, _m, res) => {
       const s = { sessionId: `sess-${randomUUID()}`, runId };
       ensureSession(db, s, clockFor(s), DEMO_ROLES);
