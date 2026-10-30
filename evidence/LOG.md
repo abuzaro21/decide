@@ -77,3 +77,13 @@ Every blocking finding has a regression test.
 - `npm ci`, then `npm run build`, then `npm test`: **88/88**. `npm run typecheck`: OK.
 - `npm start` was healthy after 2.3 s and served the UI. The Confidence Trap scenario returned **DEFER**.
 - GitHub Actions on `5660417`: ubuntu + windows verify green; Linux Playwright **7/7**.
+
+## 2026-10-30 — Gate G5 (judge experience, previews, adversarial assurance, release qualification)
+
+| Round | Verdict |
+|---|---|
+| G5 at `e994e2d` | **FAIL**. G5-01 stale replay assurance; G5-02 preview wording hid assumptions; G5-03 the known-failure panel contradicted changed evidence. Plus non-blocking G5-04…08 and gaps in the threat-catalogue tests. |
+| G5 re-check at `6de3395` | **G5 PASS**. Codex ran `npm test` 94/94, typecheck and Playwright 9/9 itself. |
+| Follow-up | Non-blocking wording branch (approved but not yet executed) fixed; T-20 concurrent distinct-invoice test added (95/95). |
+
+**All acceptance gates G1–G5: PASS.**

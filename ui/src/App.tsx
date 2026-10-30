@@ -237,6 +237,7 @@ function GroundTruth({ truth, v }: { truth: any[]; v: View }) {
       <div className="eyebrow">Ground truth — invisible to every monitor and to the engine <span className="sim">known failure</span></div>
       <p>Real users are seeing <strong>{truth[0].realUserErrorRatePct}% errors</strong>. This scenario <em>started</em> with both monitors reporting healthy, agreeing and fresh.{' '}
         {executed ? 'DECIDE executed: its evidence was fresh, attributable and consistent — and false.'
+          : d.outcome === 'EXECUTE' ? 'It has been approved on that evidence: pressing Execute will run it, on evidence that is fresh, consistent — and false.'
           : onlyApproval ? 'With the current evidence, approval is the only thing left: once approved, DECIDE would execute on false evidence.'
           : 'The evidence has changed since then; the verdict above reflects the current evidence, not the initial setup.'}
         {' '}A decision layer is only as good as what it can observe.</p>

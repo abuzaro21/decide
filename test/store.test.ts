@@ -395,3 +395,33 @@ test('T-24 the evaluator throwing inside execute → 503, no decision recorded, 
     assert.equal(generation(db), 88);
   } finally { pol.risk = orig; done(); }
 });
+
+test('T-20 two distinct $600 invoices executed concurrently from zero exposure → one pays, the other needs approval', async () => {
+  const { file, db, done } = fresh();
+  try {
+    SCENARIOS.find((x) => x.id === 'vendor-clean')!.seed(db, S, NOW);
+    const ids: string[] = [];
+    for (const inv of ['INV-A', 'INV-B']) {
+      tx(db, () => {
+        publish(db, S, { kind: 'invoice_state', sourceId: 'erp', sourceClass: 'ADAPTER', subject: { invoiceId: inv }, value: { version: 1, status: 'OPEN', openBalanceCents: 60_000, currency: 'USD' } }, NOW);
+        publish(db, S, { kind: 'three_way_match', sourceId: 'erp', sourceClass: 'ADAPTER', subject: { invoiceId: inv, invoiceVersion: 1 }, value: { status: 'MATCHED' } }, NOW);
+        publish(db, S, { kind: 'remit_to', sourceId: 'erp', sourceClass: 'ADAPTER', subject: { invoiceId: inv, invoiceVersion: 1 }, value: { accountDigest: 'acct:7c1-northwind-original' } }, NOW);
+      });
+      ids.push(propose(db, S, { actionType: 'pay_vendor_invoice', initiatingPrincipal: 'agent:ap-bot', proposer: { kind: 'MANUAL' }, params: { vendorId: 'northwind', invoiceId: inv, amountCents: 60_000, currency: 'USD', rail: 'ACH' } }, NOW).proposalId);
+    }
+    for (const id of ids) assert.equal(view(db, S, id, NOW).decision!.outcome, 'EXECUTE', 'each alone is MEDIUM');
+    db.close();
+    const results = await Promise.all(ids.map((proposalId) => new Promise<any>((resolve, reject) => {
+      const w = new Worker(CHILD, { workerData: { db: file, ...S, proposalId, revision: 1, now: NOW } });
+      w.once('message', resolve); w.once('error', reject);
+    })));
+    const re = openDb(file);
+    try {
+      assert.deepEqual(results.map((r) => r.status).sort(), ['NOT_EXECUTED', 'SUCCEEDED'], JSON.stringify(results));
+      const ledger = readObs(re, S, 'vendor_exposure', 'ledger', { vendorId: 'northwind', windowDays: 30 })!.value as any;
+      assert.equal(ledger.settlements.length, 1);
+      const loser = ids.find((_, i) => results[i].status === 'NOT_EXECUTED')!;
+      assert.equal(view(re, S, loser, NOW).decision!.outcome, 'ESCALATE', 'cumulative $1,200 crosses into HIGH');
+    } finally { re.close(); }
+  } finally { done(); }
+});
