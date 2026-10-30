@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/decide-lockup-light.svg">
+  <img alt="DECIDE" src="docs/brand/decide-lockup-dark.svg" height="56">
+</picture>
+
 # DECIDE — The Action Boundary
 
 > An AI agent is allowed to do something. **Should this exact action happen now?** If not, **who has to act first?**
