@@ -37,7 +37,7 @@ test('Confidence Trap: DEFER → DEFER → ESCALATE → approve → EXECUTE → 
   await page.getByRole('tab', { name: /Audit trail/ }).click();
   await expect(page.getByText(/Chain verified/)).toBeVisible();
   await page.getByRole('button', { name: 'Replay current decision' }).click();
-  await expect(page.getByText('Replayed: identical ✓')).toBeVisible();
+  await expect(page.getByText(/Replayed decision .*: identical ✓/)).toBeVisible();
 });
 
 test('swapping the artifact after approval kills the approval', async ({ page }) => {
@@ -82,7 +82,29 @@ test('known failure: both monitors blind — engine allows it and the page says 
   await expect(page.getByText(/invisible to every monitor/)).toBeVisible();
   await page.getByRole('button', { name: 'Approve this snapshot' }).click();
   await page.getByRole('button', { name: /^Execute/ }).click();
-  await expect(page.getByText(/DECIDE executed anyway/)).toBeVisible();
+  await expect(page.getByText(/DECIDE executed: its evidence was fresh/)).toBeVisible();
+});
+
+test('G5-01 a replay result is shown only for the decision it replayed', async ({ page }) => {
+  await page.goto('/');
+  await expectTruthful(page, 'DEFER');
+  await page.getByRole('tab', { name: /Audit trail/ }).click();
+  await page.getByRole('button', { name: 'Replay current decision' }).click();
+  await expect(page.getByText(/Replayed decision .*: identical ✓/)).toBeVisible();
+  await page.getByRole('button', { name: /fresh, healthy telemetry/ }).click();
+  await expectTruthful(page, 'DEFER');
+  await expect(page.getByText(/Replayed decision .*: identical ✓/)).toHaveCount(0);
+});
+
+test('G5-03 known-failure panel never contradicts the current evidence', async ({ page }) => {
+  await page.goto('/');
+  await expectTruthful(page, 'DEFER');
+  await page.getByRole('button', { name: 'Known failure' }).click();
+  await expect(page.getByText(/approval is the only thing left/)).toBeVisible();
+  await page.getByRole('button', { name: /Both monitors report 3.2% errors/ }).click();
+  await expectTruthful(page, 'DEFER');
+  await expect(page.getByText(/evidence has changed since then/)).toBeVisible();
+  await expect(page.getByText(/approval is the only thing left/)).toHaveCount(0);
 });
 
 test('@mobile renders without horizontal scroll and shows the verdict', async ({ page }) => {

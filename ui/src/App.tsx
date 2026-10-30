@@ -113,7 +113,7 @@ export function App() {
               )}
               <NextStep v={v} busy={busy} onExecute={() => run(() => api('POST', `/api/proposals/${v.proposalId}/revisions/${v.revision}/execute`).then(() => undefined))} />
               {v.receipt && <Receipt r={v.receipt} />}
-              {truth.length > 0 && <GroundTruth truth={truth} executed={v.status === 'CLOSED_EXECUTED'} />}
+              {truth.length > 0 && <GroundTruth truth={truth} v={v} />}
             </article>
 
             <GenuineAI v={v} recs={recs} scenario={active} />
@@ -123,8 +123,8 @@ export function App() {
                 <h3>What would change this decision?</h3>
                 <p className="hint">The same evaluator re-run on hypothetical fixes. Preview only: it creates no evidence, approval or effect.</p>
                 <ul>
-                  {wwc.single.map((x: any) => <li key={x.gateId}><span>{repairLabel(x)}</span><Badge o={x.outcome} />{x.remaining.length > 0 && <small>still open: {x.remaining.map(niceGate).join(', ')}</small>}</li>)}
-                  {wwc.combined && <li className="combined"><span>If all of the above</span><Badge o={wwc.combined.outcome} />{wwc.combined.remaining.length > 0 && <small>still open: {wwc.combined.remaining.map(niceGate).join(', ')}</small>}</li>}
+                  {wwc.single.map((x: any) => <li key={x.gateId}><span>{assumptionText(x.assumes)}</span><Badge o={x.outcome} />{x.remaining.length > 0 && <small>still open: {x.remaining.map(niceGate).join(', ')}</small>}</li>)}
+                  {wwc.combined && <li className="combined"><span>If all of these happened together</span><Badge o={wwc.combined.outcome} />{wwc.combined.remaining.length > 0 && <small>still open: {wwc.combined.remaining.map(niceGate).join(', ')}</small>}</li>}
                 </ul>
               </article>
             )}
@@ -135,14 +135,14 @@ export function App() {
                 <button role="tab" aria-selected={tab === 'audit'} className={tab === 'audit' ? 'on' : ''} onClick={() => setTab('audit')}>Audit trail {auditData?.verify?.ok ? '✓' : ''}</button>
               </div>
               {tab === 'trace' ? <Trace d={d} /> : <Audit a={auditData} decisionId={v.decisionId} replayed={replayed}
-                onReplay={async () => setReplayed(await api('POST', `/api/decisions/${v.decisionId}/replay`))} />}
+                onReplay={async () => { const id = v.decisionId; const r = await api('POST', `/api/decisions/${id}/replay`); setReplayed({ decisionId: id, ...r }); }} />}
             </section>
           </section>
 
           <aside className="col-side">
             <article className="card signals">
               <h3>What this decision rests on</h3>
-              <Signal label="Evidence" value={`${d.display.evidenceCoverage.available}/${d.display.evidenceCoverage.required} required sources`} note={`${SUPPORT_COPY[d.display.evidenceSupport] ?? d.display.evidenceSupport}. Deterministic count, not a probability.`} />
+              <Signal label="Evidence" value={`${d.display.evidenceCoverage.available}/${d.display.evidenceCoverage.required} required evidence kinds`} note={`${SUPPORT_COPY[d.display.evidenceSupport] ?? d.display.evidenceSupport}. Deterministic count, not a probability.`} />
               <Signal label="Provenance" value={`${d.display.provenance.adapter} from systems · ${d.display.provenance.requester} requester-asserted`} note={admissionNote(d)} />
               <Signal label="Risk score" value={d.display.riskScore ? `${d.display.riskScore.ordinal}/4 · ${d.display.riskScore.tier}` : '—'} note={d.display.riskScore ? `${d.display.riskScore.components} — consequence·breadth·recovery through a published matrix. Ordinal heuristic.` : 'Not computed until the proposal is complete'} />
               <Signal label="Reversibility" value={d.risk ? (d.risk.uUnknown ? 'Unknown — treated as irreversible' : ['No effect', 'Restorable (verified)', 'Compensable', 'Irreversible'][d.risk.U]) : '—'} />
@@ -194,10 +194,14 @@ function laterSummary(later: Gate[]) {
   const checks = later.filter((g) => !g.gateId.endsWith('APPROVE')).length;
   return [checks ? `${checks} dependent check${checks > 1 ? 's' : ''} re-run on the new evidence` : '', appr ? 'then, if risk requires it, a named human approves the exact snapshot' : ''].filter(Boolean).join(' — ');
 }
-function repairLabel(x: { gateId: string; label: string }) {
-  if (x.gateId.startsWith('AVAIL(')) return `If fresh, acceptable ${EVIDENCE_LABEL[x.gateId.slice(6, -1)] ?? x.gateId} arrived`;
-  if (x.gateId.endsWith('APPROVE')) return 'If the required reviewer approved this exact snapshot';
-  return `If ${niceGate(x.gateId)} were resolved`;
+/** States exactly what the preview assumed (G5-02): which sources publish which values. */
+function assumptionText(assumes: { kind: string; sources: string[]; value?: Record<string, unknown>; approval?: string }[]) {
+  return assumes.map((a) => {
+    if (a.kind === 'approval') return `If the ${roleLabel(a.approval)?.toLowerCase()} approved this exact snapshot`;
+    const label = EVIDENCE_LABEL[a.kind] ?? a.kind;
+    const val = Object.entries(a.value ?? {}).map(([k, x]) => `${k} ${x}`).join(', ');
+    return `If ${a.sources.join(' and ')} published fresh ${label} for this exact action (${val})`;
+  }).join('; ');
 }
 const niceGate = (id: string | Gate) => {
   const g = typeof id === 'string' ? id : id.gateId;
@@ -219,17 +223,23 @@ const ADJ_HINT: Record<string, string> = {
 };
 
 function Invalidated({ d }: { d: NonNullable<View['decision']> }) {
-  const inv = d.obligations.flatMap((g) => (g.observed?.invalid ?? []) as { approvalId: string; reason: string }[]);
+  const inv = (d.approvalChecks ?? []).filter((x) => x.reason) as { approvalId: string; reason: string }[];
   if (!inv.length) return null;
   return <p className="invalidated">{inv.map((x) => <span key={x.approvalId}>Approval <code>{short(x.approvalId)}</code> no longer counts: {x.reason}.</span>)}</p>;
 }
 
-function GroundTruth({ truth, executed }: { truth: any[]; executed: boolean }) {
+function GroundTruth({ truth, v }: { truth: any[]; v: View }) {
+  const d = v.decision!;
+  const executed = v.status === 'CLOSED_EXECUTED';
+  const onlyApproval = d.obligations.length === 1 && d.obligations[0].purpose === 'APPROVE';
   return (
     <div className="ground-truth">
       <div className="eyebrow">Ground truth — invisible to every monitor and to the engine <span className="sim">known failure</span></div>
-      <p>Real users are seeing <strong>{truth[0].realUserErrorRatePct}% errors</strong>. Both monitors report healthy, agree with each other and are fresh. {executed ? 'DECIDE executed anyway: ' : 'DECIDE will allow this once approved: '}
-        its evidence was fresh, attributable and consistent — and false. A decision layer is only as good as what it can observe.</p>
+      <p>Real users are seeing <strong>{truth[0].realUserErrorRatePct}% errors</strong>. This scenario <em>started</em> with both monitors reporting healthy, agreeing and fresh.{' '}
+        {executed ? 'DECIDE executed: its evidence was fresh, attributable and consistent — and false.'
+          : onlyApproval ? 'With the current evidence, approval is the only thing left: once approved, DECIDE would execute on false evidence.'
+          : 'The evidence has changed since then; the verdict above reflects the current evidence, not the initial setup.'}
+        {' '}A decision layer is only as good as what it can observe.</p>
     </div>
   );
 }
@@ -328,9 +338,9 @@ function Audit({ a, decisionId, replayed, onReplay }: { a: any; decisionId: stri
     <div className="audit">
       <div className="audit-head">
         <span className={a.verify.ok ? 'ok' : 'bad'}>{a.verify.ok ? `Chain verified · ${a.verify.length} events` : `Chain broken at ${a.verify.at}: ${a.verify.reason}`}</span>
-        {a.verify.ok && <code title="Copy this head; a later export must extend it">head {a.verify.head.seq}:{short(a.verify.head.hash)}</code>}
+        {a.verify.ok && <details className="head"><summary>Audit head (copy to verify later)</summary><code className="mono-block">{JSON.stringify(a.verify.head)}</code></details>}
         {decisionId && <button onClick={onReplay}>Replay current decision</button>}
-        {replayed && <span className={replayed.identical ? 'ok' : 'bad'}>{replayed.replayable ? (replayed.identical ? 'Replayed: identical ✓' : 'Replay differs ✗') : replayed.reason}</span>}
+        {replayed && replayed.decisionId === decisionId && <span className={replayed.identical ? 'ok' : 'bad'}>{replayed.replayable ? (replayed.identical ? `Replayed decision ${short(decisionId)}: identical ✓` : 'Replay differs ✗') : replayed.reason}</span>}
       </div>
       <ol className="events">{[...a.events].reverse().map((e: any) => (
         <li key={e.seq}><span className="seq">#{e.seq}</span><span className="etype">{e.event.type.replace(/_/g, ' ').toLowerCase()}</span><span className="eactor">{e.event.actor}</span>

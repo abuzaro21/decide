@@ -136,3 +136,15 @@ test('G2-06 malformed URLs get a 400 and the server stays up; missing service re
     assert.equal((await call('GET', `/api/proposals/${p.body.proposalId}`)).body.decision.outcome, 'ASK');
   } finally { await stop(); }
 });
+
+test('T-41 malformed payment amounts are rejected at ingress (400); G5-06 malformed cookie → 401, not 500', async () => {
+  const { base, stop } = await start();
+  try {
+    const { call } = await client(base);
+    await call('POST', '/api/scenarios/vendor-clean');
+    for (const amountCents of [0, -1, 1.5, '800', Number.MAX_SAFE_INTEGER + 2])
+      assert.equal((await call('POST', '/api/proposals', { actionType: 'pay_vendor_invoice', params: { vendorId: 'northwind', invoiceId: 'INV-10422', amountCents, currency: 'USD', rail: 'ACH' } })).status, 400, String(amountCents));
+    const bad = await fetch(`${base}/api/session`, { headers: { cookie: 'decide_sid=%' } });
+    assert.equal(bad.status, 401);
+  } finally { await stop(); }
+});

@@ -215,3 +215,17 @@ test('R-01 approval binds the exact in-window exposure: a settlement ageing out 
   const backfilled = withLedger(ok, [{ at: T0 - 31 * 24 * HOUR, cents: 500_000 }]);
   assert.equal(run(vendorPolicy, backfilled).outcome, 'EXECUTE', 'in-window exposure unchanged, approval still valid');
 });
+
+test('T-10 an approval past its expiry cannot execute; T-11 a tier rise after approval needs the higher role', () => {
+  const s = swap(payBase({ amountCents: 800_000 }), 'invoice_state', { openBalanceCents: 800_000 });
+  const approved = approve(vendorPolicy, s, 'human:ana');
+  const exp = approved.approvals[0].expiresAt;
+  assert.equal(run(vendorPolicy, { ...approved, now: exp - 1 }).outcome, 'EXECUTE');
+  const late = run(vendorPolicy, { ...approved, now: exp });
+  assert.equal(late.outcome, 'ESCALATE');
+  assert.match(JSON.stringify(late.approvalChecks), /expired/);
+  const crit = run(vendorPolicy, swap(approved, 'vendor_exposure', { settlements: [{ at: T0 - HOUR, cents: 2_000_000 }] }));
+  assert.equal(crit.risk!.tier, 'CRITICAL');
+  assert.equal(crit.outcome, 'ESCALATE');
+  assert.equal(crit.obligations[0].required, 'finance-controller');
+});

@@ -32,7 +32,7 @@ Each entry records what was actually run and what happened. Claims elsewhere poi
 
 ## 2026-10-29 — Agent Trust boundary check (read-only)
 
-- The local checkout `E:\doo\The Agent That Earns Trust\agent-trust` is at `4c25b4b` with a clean tree.
+- The local Agent Trust checkout is at `4c25b4b` with a clean tree.
 - `git ls-remote origin refs/heads/main` returns `c389390dae5d08fd749058850138b059dfbfe2db`.
 - So the local checkout is stale. It is **not** the release. Nothing was fetched, modified or deployed.
 

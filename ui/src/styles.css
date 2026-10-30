@@ -130,3 +130,5 @@ button:focus-visible { outline: 2px solid var(--ask); outline-offset: 2px; }
 .genuine summary { cursor: pointer; font-size: 13px; color: var(--ink-2); }
 .mono-block { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; background: var(--paper); border-radius: 8px; padding: 8px 10px; margin: 4px 0 10px; overflow-wrap: anywhere; }
 .genuine small { color: var(--ink-3); }
+
+.head summary { cursor: pointer; font-size: 12.5px; color: var(--ink-3); }

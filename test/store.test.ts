@@ -224,12 +224,12 @@ test('crash injection (process exits mid-transaction) → after reopen: both-or-
   }
 });
 
-test('concurrency: 8 threads with separate SQLite connections execute the same operation → exactly 1 effect', async () => {
+test('concurrency (T-14): 20 threads with separate SQLite connections execute the same operation → exactly 1 effect', async () => {
   const { file, db, done } = fresh();
   try {
     const { proposalId } = seedDeploy(db, S, NOW, 'canary');
     db.close();
-    const results = await Promise.all(Array.from({ length: 8 }, () => new Promise<any>((resolve, reject) => {
+    const results = await Promise.all(Array.from({ length: 20 }, () => new Promise<any>((resolve, reject) => {
       const w = new Worker(CHILD, { workerData: { db: file, ...S, proposalId, revision: 1, now: NOW } });
       w.once('message', resolve); w.once('error', reject);
     })));
@@ -378,4 +378,20 @@ test('G3-04 a timer survives while its gate is BLOCKED; the original deadline st
     assert.equal(late.outcome, 'ESCALATE');
     assert.equal(late.obligations.find((g) => g.gateId === 'D-TEL-HEALTH')!.purpose, 'TIMEOUT');
   } finally { done(); }
+});
+
+test('T-24 the evaluator throwing inside execute → 503, no decision recorded, nothing executed', async () => {
+  const { DOMAINS } = await import('../src/domains.ts');
+  const { db, done } = fresh();
+  const pol = DOMAINS.deploy_release.policy;
+  const orig = pol.risk;
+  try {
+    const { proposalId } = seedDeploy(db, S, NOW, 'canary');
+    const before = count(db, 'SELECT count(*) n FROM decisions');
+    pol.risk = () => { throw new Error('evaluator bug'); };
+    throwsHttp(() => execute(db, S, proposalId, 1, 'agent:deploy-bot', NOW), 503, /UNAVAILABLE_PRE_COMMIT/);
+    assert.equal(count(db, 'SELECT count(*) n FROM decisions'), before);
+    assert.equal(count(db, 'SELECT count(*) n FROM receipts'), 0);
+    assert.equal(generation(db), 88);
+  } finally { pol.risk = orig; done(); }
 });

@@ -513,40 +513,43 @@ export function validAdjudications(snap: Snapshot, policy: Policy): Adjudication
   return snap.adjudications.filter((x) => x.revision === snap.action.revision && x.role === roleFor(x.gateId) && (snap.roles[x.actor] ?? []).includes(x.role) && x.actor !== snap.action.initiatingPrincipal);
 }
 
+/** A hypothetical change the preview assumes, stated exactly (G5-02): which sources publish what, about which subject. */
+export interface Assumption { kind: string; sources: string[]; value?: Record<string, unknown>; approval?: string }
+
 /** explainRepairs (06 §3): on demand, bounded (≤ #FAIL + 1 core calls), never recursive, never persisted. */
 export function explainRepairs(policy: Policy, snap: Snapshot, meta: Meta, core: Decision) {
   const graph = expandPolicy(policy);
-  const repairs: { gateId: string; patch: (s: Snapshot) => Snapshot; label: string }[] = [];
+  const repairs: { gateId: string; assumes: Assumption; patch: (s: Snapshot) => Snapshot }[] = [];
+  const evidenceRepair = (gateId: string, spec: EvidenceKind, value: Record<string, unknown>) => {
+    const sources = Object.keys(spec.sources); // every accepted source publishes it, so a repair never manufactures a disagreement
+    repairs.push({ gateId, assumes: { kind: spec.kind, sources, value }, patch: (s) => ({ ...s, candidates: [...s.candidates, ...sources.map((src) => hypo(spec, s, src, value))] }) });
+  };
   for (const f of core.obligations) {
     if (f.gateId.startsWith('AVAIL(')) {
       const spec = policy.evidence.find((e) => `AVAIL(${e.kind})` === f.gateId)!;
-      if (!spec.hypothetical) continue;
-      const v = spec.hypothetical(snap.action);
-      repairs.push({ gateId: f.gateId, label: `if ${spec.kind} were available and acceptable`, patch: (s) => ({ ...s, candidates: [...s.candidates, hypo(spec, s, v)] }) });
+      if (spec.hypothetical) evidenceRepair(f.gateId, spec, spec.hypothetical(snap.action));
       continue;
     }
     const def = graph.get(f.gateId);
     const rep = def?.repair;
     if (!rep || f.resolver === 'NONE') continue;
     if ('approval' in rep) {
-      repairs.push({ gateId: f.gateId, label: `if ${f.required} approved this exact snapshot`, patch: (s) => ({ ...s, roles: { ...s.roles, __hypothetical__: [String(f.required)] }, approvals: [...s.approvals, hypoApproval(policy, s, meta, core)] }) });
-    } else {
-      const spec = policy.evidence.find((e) => e.kind === rep.kind)!;
-      repairs.push({ gateId: f.gateId, label: `if ${rep.kind} became acceptable`, patch: (s) => ({ ...s, candidates: [...s.candidates, hypo(spec, s, rep.value)] }) });
-    }
+      repairs.push({ gateId: f.gateId, assumes: { kind: 'approval', sources: [], approval: String(f.required) },
+        patch: (s) => ({ ...s, roles: { ...s.roles, __hypothetical__: [String(f.required)] }, approvals: [...s.approvals, hypoApproval(policy, s, meta, core)] }) });
+    } else evidenceRepair(f.gateId, policy.evidence.find((e) => e.kind === rep.kind)!, rep.value);
   }
   const run = (patches: typeof repairs) => {
     const s = patches.reduce((acc, r) => r.patch(acc), snap);
     const d = evaluateCore(policy, s, meta, 'PREVIEW');
     return { outcome: d.outcome, remaining: d.obligations.map((g) => g.gateId) };
   };
-  const single = repairs.map((r) => ({ gateId: r.gateId, label: r.label, ...run([r]) }));
-  const combined = repairs.length >= 2 ? { gateIds: repairs.map((r) => r.gateId), ...run(repairs) } : null;
+  const single = repairs.map((r) => ({ gateId: r.gateId, assumes: [r.assumes], ...run([r]) }));
+  const combined = repairs.length >= 2 ? { gateIds: repairs.map((r) => r.gateId), assumes: repairs.map((r) => r.assumes), ...run(repairs) } : null;
   return { single, combined, preview: true as const };
 }
 
-function hypo(spec: EvidenceKind, s: Snapshot, value: Record<string, unknown>): Observation {
-  return { kind: spec.kind, sourceId: Object.keys(spec.sources)[0], sourceClass: 'HYPOTHETICAL', sourceRevision: Number.MAX_SAFE_INTEGER, subject: spec.subject(s.action), value, observedAt: s.now };
+function hypo(spec: EvidenceKind, s: Snapshot, sourceId: string, value: Record<string, unknown>): Observation {
+  return { kind: spec.kind, sourceId, sourceClass: 'HYPOTHETICAL', sourceRevision: Number.MAX_SAFE_INTEGER, subject: spec.subject(s.action), value, observedAt: s.now };
 }
 
 function hypoApproval(policy: Policy, s: Snapshot, meta: Meta, d: Decision): Approval {

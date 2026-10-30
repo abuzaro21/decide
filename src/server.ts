@@ -52,7 +52,9 @@ export function createApp(opts: AppOptions) {
   const sessionOf = (req: IncomingMessage): Scope => {
     const raw = (req.headers.cookie ?? '').split(/;\s*/).find((c) => c.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
     if (!raw) throw new HttpError(401, { error: 'no session; POST /api/session first' });
-    const [sessionId, cookieRun] = decodeURIComponent(raw).split('.');
+    let decoded: string;
+    try { decoded = decodeURIComponent(raw); } catch { throw new HttpError(401, { error: 'malformed session cookie' }); }
+    const [sessionId, cookieRun] = decoded.split('.');
     if (cookieRun !== runId) throw new HttpError(410, { error: 'this demo run was restarted; your previous session and its data no longer exist', currentRunId: runId, startedAt });
     const ok = db.prepare('SELECT 1 FROM sessions WHERE session_id=? AND run_id=?').get(sessionId, runId);
     if (!ok) throw new HttpError(401, { error: 'unknown session' });

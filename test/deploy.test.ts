@@ -1,7 +1,7 @@
 // DEP golden fixtures (07 v2.1, policy deploy@cut1). Pure evaluator, no DB.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MIN, explainRepairs, observationId } from '../src/engine.ts';
+import { MIN, explainRepairs, observationId, evaluateCore } from '../src/engine.ts';
 import { deployPolicy, conflictDigest } from '../src/policy/deploy.ts';
 import { deployBase, without, withObs, decide, failIds, blockedIds, approve, META, T0 } from './fixtures.ts';
 
@@ -266,3 +266,37 @@ test('timer CANCEL requires a current operator', () => {
   assert.equal(decide({ ...s0, timers, adjudications: [cancel('human:nobody')] }).outcome, 'DEFER');
   assert.equal(decide({ ...s0, timers, adjudications: [cancel('human:op')] }).outcome, 'REFUSE');
 });
+
+// ---- Codex G5 regressions and threat-catalogue gaps ----
+test('G5-02 previews state exact assumptions; a telemetry repair publishes every accepted source (no manufactured conflict)', () => {
+  const red = withObs(withObs(deployBase(), 'telemetry', 'apm', { errorRatePct: 3.2, p95Ms: 310 }), 'telemetry', 'synthetic', { errorRatePct: 3.2, p95Ms: 330 });
+  const w = explainRepairs(deployPolicy, red, META, decide(red));
+  const h = w.single.find((x) => x.gateId === 'D-TEL-HEALTH')!;
+  assert.deepEqual(h.assumes[0].sources, ['apm', 'synthetic']);
+  assert.equal(h.outcome, 'ESCALATE');
+  assert.deepEqual(h.remaining, ['D-APPROVE'], 'not a telemetry conflict');
+  const noDrill = explainRepairs(deployPolicy, without(deployBase(), 'rollback_drill'), META, decide(without(deployBase(), 'rollback_drill')));
+  assert.deepEqual(noDrill.single[0].assumes[0].value, { status: 'PASS' }, 'the preview says it assumes a PASSING drill');
+});
+
+test('T-05 an older GREEN from the same source never overrides a newer RED', () => {
+  const s = deployBase();
+  const tel = s.candidates.find((o) => o.kind === 'telemetry' && o.sourceId === 'apm')!;
+  const red = { ...tel, sourceRevision: 5, value: { errorRatePct: 3.2, p95Ms: 310 } };
+  const greenOld = { ...tel, sourceRevision: 4, value: { errorRatePct: 0.1, p95Ms: 100 }, observedAt: T0 };
+  const syn = s.candidates.find((o) => o.kind === 'telemetry' && o.sourceId === 'synthetic')!;
+  const d = decide({ ...s, candidates: [...s.candidates.filter((o) => o.kind !== 'telemetry'), red, greenOld, { ...syn, sourceRevision: 9, value: { errorRatePct: 3.2, p95Ms: 330 } }] });
+  assert.ok(d.rejected.some((r) => r.reason === 'SUPERSEDED'));
+  assert.deepEqual(failIds(d), ['D-TEL-HEALTH']);
+});
+
+test('T-09 a policy hash change invalidates an approval; T-18 a hypothetical approval never counts in LIVE', () => {
+  const approved = approve(deployBase(), 'human:rhea');
+  assert.equal(decide(approved).outcome, 'EXECUTE');
+  const otherPolicy = evaluateCoreWith(approved, { ...META, policyHash: 'test-policy-v2' });
+  assert.equal(otherPolicy.outcome, 'ESCALATE');
+  assert.match(JSON.stringify(otherPolicy.approvalChecks), /policy changed/);
+  const hypo = { ...approved, approvals: approved.approvals.map((a) => ({ ...a, hypothetical: true as const })) };
+  assert.equal(decide(hypo).outcome, 'ESCALATE');
+});
+const evaluateCoreWith = (s: ReturnType<typeof deployBase>, meta: typeof META) => evaluateCore(deployPolicy, s, meta);
