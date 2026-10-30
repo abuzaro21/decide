@@ -135,3 +135,30 @@ test('first load: a late session response cannot split the page across two sessi
   await expectTruthful(page, 'DEFER');
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
+
+test('a late 410 from a superseded session cannot replace the newer scenario session', async ({ page }) => {
+  // Codex L-01: an obsolete request's 401/410 arriving after a scenario switch must not start another session.
+  await page.goto('/');
+  await expectTruthful(page, 'DEFER');
+  await page.getByRole('tab', { name: /Audit trail/ }).click();
+  let deliver410!: () => void;
+  const delivered = new Promise<void>((r) => { deliver410 = r; });
+  let deliverStale!: () => void;
+  const staleGate = new Promise<void>((r) => { deliverStale = r; });
+  await page.route('**/api/decisions/*/replay', async (route) => {
+    await staleGate;
+    await route.fulfill({ status: 410, contentType: 'application/json', body: JSON.stringify({ error: 'this demo run was restarted' }) });
+    deliver410();
+  }, { times: 1 });
+  await page.route('**/api/scenarios/vendor-clean', async (route) => {
+    const response = await route.fetch();
+    deliverStale();
+    await delivered;
+    await new Promise((r) => setTimeout(r, 500)); // let any (wrong) recovery session land before the proposal reaches the UI
+    await route.fulfill({ response });
+  });
+  await page.getByRole('button', { name: 'Replay current decision' }).click();
+  await page.getByRole('button', { name: 'Routine payment' }).click();
+  await expectTruthful(page, 'EXECUTE');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});

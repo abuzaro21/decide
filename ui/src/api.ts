@@ -6,19 +6,28 @@ export class ApiError extends Error {
 }
 
 let sessionPromise: Promise<void> | null = null;
+let generation = 0;
 // Sessions are created one after another: two concurrent POSTs let the older response's Set-Cookie land last,
 // so later requests would carry a session that does not own the proposal the caller just created.
-export const newSession = () => (sessionPromise = (sessionPromise ?? Promise.resolve()).catch(() => {})
-  .then(() => fetch('/api/session', { method: 'POST' })).then(() => undefined));
+export const newSession = () => {
+  generation++;
+  return (sessionPromise = (sessionPromise ?? Promise.resolve()).catch(() => {})
+    .then(() => fetch('/api/session', { method: 'POST' })).then(() => undefined));
+};
 
 export async function api<T = any>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
   if (!sessionPromise) newSession();
+  const gen = generation;
   await sessionPromise;
   const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
   const json = await res.json().catch(() => ({}));
   if ((res.status === 401 || res.status === 410) && !retried) {
-    if (res.status === 410) window.dispatchEvent(new CustomEvent('decide:run-restarted', { detail: json }));
-    newSession();
+    // Reset at most once per session generation: if a newer session already replaced the one this request ran in
+    // (a scenario switch or a concurrent recovery), retry under it instead of replacing it again.
+    if (gen === generation) {
+      if (res.status === 410) window.dispatchEvent(new CustomEvent('decide:run-restarted', { detail: json }));
+      newSession();
+    }
     return api(method, path, body, true);
   }
   if (!res.ok) throw new ApiError(res.status, json);
